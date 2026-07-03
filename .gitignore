@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+
+dist/
+build/
+*.spec
+
+output/
+*.xlsx
+*.xls
+*.pdf
+
+!resources/.gitkeep
