@@ -176,10 +176,17 @@ class MainWindow(QMainWindow):
 
     def export_excel(self):
 
+        import os
+
+        default_path = os.path.join(
+            os.path.expanduser("~/Desktop"),
+            "sample.xlsx"
+        )
+
         save_path, _ = QFileDialog.getSaveFileName(
             self,
             "見積書を保存",
-            "",
+            default_path,
             "Excelファイル (*.xlsx)"
         )
 
