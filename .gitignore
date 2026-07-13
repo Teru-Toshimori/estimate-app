@@ -10,4 +10,7 @@ output/
 *.xls
 *.pdf
 
+config/graph_config.py
+token_cache.bin
+
 !resources/.gitkeep
