@@ -8,6 +8,7 @@ build/
 output/
 *.xlsx
 *.xls
+*.xlsm
 *.pdf
 
 config/graph_config.py
