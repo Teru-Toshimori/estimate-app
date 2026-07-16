@@ -326,134 +326,150 @@ class TgTab(QWidget):
     # PDFフォルダ一括解析
     # =====================================
     def pdf_parse(self):
-        """
-        PDFフォルダ一括解析
-        """
 
-        input_dir = self.input_dir_edit.text().strip()
+        try:
 
-        if not input_dir:
-
-            QMessageBox.warning(
-                self,
-                "確認",
-                "入力フォルダを選択してください。"
+            logger.info(
+                "TG PDF解析ボタン押下"
             )
-            return
 
-        if not os.path.isdir(input_dir):
 
-            QMessageBox.warning(
-                self,
-                "確認",
-                "入力フォルダが存在しません。"
-            )
-            return
+            # -----------------------------
+            # 入力フォルダ取得
+            # -----------------------------
 
-        pdf_files = sorted(
-            glob.glob(
-                os.path.join(
-                    input_dir,
-                    "*.pdf"
+            input_dir = self.input_dir_edit.text().strip()
+
+
+            if not input_dir:
+
+                QMessageBox.warning(
+                    self,
+                    "確認",
+                    "入力PDFフォルダを選択してください"
+                )
+
+                return
+
+
+
+            pdf_files = sorted(
+                glob.glob(
+                    os.path.join(
+                        input_dir,
+                        "*.pdf"
+                    )
                 )
             )
-        )
 
-        if not pdf_files:
 
-            QMessageBox.warning(
-                self,
-                "確認",
-                "PDFファイルが見つかりません。"
-            )
-            return
+            if not pdf_files:
 
-        self.pdf_results = []
+                QMessageBox.warning(
+                    self,
+                    "確認",
+                    "PDFがありません"
+                )
 
-        self.progress.setMaximum(
-            len(pdf_files)
-        )
-        self.progress.setValue(0)
+                return
 
-        self.add_log("")
-        self.add_log("========== PDF解析開始 ==========")
-        self.add_log(f"入力フォルダ : {input_dir}")
-        self.add_log(f"対象件数 : {len(pdf_files)}")
 
-        reader = TgPdfReader()
 
-        for index, pdf_path in enumerate(pdf_files):
-
-            filename = os.path.basename(
-                pdf_path
+            logger.info(
+                "解析PDF数 : %s",
+                len(pdf_files)
             )
 
-            self.set_status(
-                f"解析中 ({index + 1}/{len(pdf_files)}) {filename}",
-                index
-            )
 
-            self.add_log("")
-            self.add_log(
-                f"----- {filename} -----"
-            )
+            self.pdf_results = []
 
-            try:
 
-                data = reader.parse(
+            reader = TgPdfReader()
+
+
+
+            # -----------------------------
+            # PDF解析
+            # -----------------------------
+
+            for pdf_path in pdf_files:
+
+
+                logger.info(
+                    "解析開始 : %s",
                     pdf_path
                 )
 
-                self.pdf_results.append(
-                    {
-                        "pdf_path": pdf_path,
-                        "data": data,
-                    }
+
+                result = reader.parse(
+                    pdf_path
                 )
 
-                self.add_log(
-                    f"件名 : {data.subject}"
+
+                logger.info(
+                    "解析結果 : %s",
+                    result
                 )
 
-                self.add_log(
-                    f"金額 : {data.amount}"
-                )
 
-                self.add_log(
-                    "解析完了"
-                )
+                if result:
 
-            except Exception as error:
 
-                logger.exception(
-                    "PDF解析失敗"
-                )
+                    subject = result.get(
+                        "品名",
+                        ""
+                    )
 
-                self.add_log(
-                    f"解析失敗 : {error}"
-                )
+                    amount = result.get(
+                        "金額",
+                        ""
+                    )
 
-        self.progress.setValue(
-            len(pdf_files)
-        )
 
-        self.set_status(
-            "PDF解析が完了しました。",
-            len(pdf_files)
-        )
+                    logger.info(
+                        "品名 : %s",
+                        subject
+                    )
 
-        self.add_log("")
-        self.add_log("========== PDF解析終了 ==========")
-        self.add_log(
-            f"成功 : {len(self.pdf_results)} 件"
-        )
+                    logger.info(
+                        "金額 : %s",
+                        amount
+                    )
 
-        QMessageBox.information(
-            self,
-            "完了",
-            f"{len(self.pdf_results)} 件のPDF解析が完了しました。"
-        )
 
+                    self.pdf_results.append(
+
+                        {
+                            "pdf_path": pdf_path,
+
+                            "data": result
+
+                        }
+
+                    )
+
+
+            self.set_status(
+                "PDF解析完了",
+                100
+            )
+
+
+            QMessageBox.information(
+                self,
+                "完了",
+                f"{len(self.pdf_results)}件解析しました"
+            )
+
+
+
+        except Exception:
+
+
+            logger.exception(
+                "TG PDF解析失敗"
+            )
+        
     # =====================================
     # 台帳記入（未実装）
     # =====================================

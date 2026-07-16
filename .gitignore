@@ -17,3 +17,5 @@ token_cache.bin
 !resources/.gitkeep
 
 .env
+
+dist/tools/tesseract

@@ -1,9 +1,11 @@
+# services/tg_pdf_reader.py
+
+import os
 import logging
 
-from pypdfium2 import PdfDocument
+import fitz  # PyMuPDF
 
-from models.tg_estimate_data import TgEstimateData
-from services.openai_ocr import OpenAIOcr
+from services.tg_openai_vision import extract_tg_data
 
 
 logger = logging.getLogger(__name__)
@@ -11,184 +13,122 @@ logger = logging.getLogger(__name__)
 
 class TgPdfReader:
 
-    def parse(
-        self,
-        pdf_path: str
-    ) -> TgEstimateData:
-        """
-        PDF解析
+    def __init__(self):
+        pass
 
-        PDF
-          ↓
-        pypdfium2
-          ↓
-        高解像度画像化
-          ↓
-        OCR対象領域切り抜き
-          ↓
-        OpenAI OCR
-          ↓
-        JSON
-          ↓
-        TgEstimateData
+
+    def convert_pdf_to_image(self, pdf_path):
+        """
+        PDFを画像化する
         """
 
-        data = TgEstimateData()
+        logger.info("PDF画像変換開始")
+
+        doc = fitz.open(pdf_path)
+
+        if len(doc) == 0:
+            raise Exception(
+                "PDFページが存在しません"
+            )
+
+        page = doc[0]
+
+        pix = page.get_pixmap(
+            dpi=200
+        )
+
+
+        image_path = pdf_path.replace(
+            ".pdf",
+            "_page1.png"
+        )
+
+
+        pix.save(
+            image_path
+        )
 
 
         logger.info(
-            "PDF解析開始 : %s",
+            "画像生成 : %s",
+            image_path
+        )
+
+
+        return image_path
+
+
+
+    def parse(self, pdf_path):
+        """
+        TG仕様書解析
+
+        抽出項目:
+        ・品名（件名）
+        ・予測金額
+
+        """
+
+        logger.info(
+            "========== PDF解析開始 =========="
+        )
+
+        logger.info(
+            "PDF : %s",
             pdf_path
         )
 
 
         try:
 
-            pdf = PdfDocument(
+            # -------------------------
+            # PDFチェック
+            # -------------------------
+
+            if not pdf_path:
+
+                raise ValueError(
+                    "PDFファイルが指定されていません"
+                )
+
+
+            if not os.path.exists(pdf_path):
+
+                raise FileNotFoundError(
+                    pdf_path
+                )
+
+
+            # -------------------------
+            # PDF → 画像
+            # -------------------------
+
+            image_path = self.convert_pdf_to_image(
                 pdf_path
             )
 
 
-            logger.info(
-                "ページ数 : %s",
-                len(pdf)
+            # -------------------------
+            # OpenAI Vision解析
+            # -------------------------
+
+            result = extract_tg_data(
+                image_path
             )
 
 
-            ocr = OpenAIOcr()
+            logger.info(
+                "Vision結果 : %s",
+                result
+            )
 
 
-            for page_no, page in enumerate(pdf):
+            # -------------------------
+            # 戻り値
+            # -------------------------
 
-                logger.info(
-                    "OCR開始 Page:%s",
-                    page_no + 1
-                )
+            return result
 
-
-                try:
-
-                    # ---------------------------------
-                    # PDF → 高解像度画像
-                    # scale=5 約360dpi相当
-                    # ---------------------------------
-                    bitmap = page.render(
-                        scale=5
-                    )
-
-
-                    image = bitmap.to_pil()
-
-
-                    logger.info(
-                        "画像サイズ : %s",
-                        image.size
-                    )
-
-
-                    # ---------------------------------
-                    # OCR対象範囲
-                    #
-                    # 現在:
-                    # ページ上部40%
-                    #
-                    # 帳票レイアウト確認後、
-                    # 座標固定推奨
-                    # ---------------------------------
-                    width, height = image.size
-
-
-                    ocr_image = image.crop(
-                        (
-                            0,
-                            0,
-                            width,
-                            int(height * 0.4)
-                        )
-                    )
-
-
-                    logger.info(
-                        "OCR画像サイズ : %s",
-                        ocr_image.size
-                    )
-
-
-                    result = ocr.read(
-                        ocr_image
-                    )
-
-
-                    logger.info(
-                        "OCR結果 Page:%s %s",
-                        page_no + 1,
-                        result
-                    )
-
-
-                    # ---------------------------------
-                    # 最初に取得できた値を採用
-                    # ---------------------------------
-
-                    if not data.subject:
-
-                        data.subject = result.get(
-                            "subject",
-                            ""
-                        )
-
-
-                    if not data.amount:
-
-                        data.amount = result.get(
-                            "amount",
-                            ""
-                        )
-
-
-                    if hasattr(
-                        data,
-                        "delivery_date"
-                    ):
-
-                        if not getattr(
-                            data,
-                            "delivery_date"
-                        ):
-
-                            data.delivery_date = result.get(
-                                "delivery_date",
-                                ""
-                            )
-
-
-                    if hasattr(
-                        data,
-                        "department"
-                    ):
-
-                        if not getattr(
-                            data,
-                            "department"
-                        ):
-
-                            data.department = result.get(
-                                "department",
-                                ""
-                            )
-
-
-                except Exception:
-
-                    logger.exception(
-                        "Page:%s OCR処理失敗",
-                        page_no + 1
-                    )
-
-                    continue
-
-
-            pdf.close()
 
 
         except Exception:
@@ -197,56 +137,16 @@ class TgPdfReader:
                 "PDF解析失敗"
             )
 
-            return data
+
+            return {
+                "品名": "",
+                "金額": ""
+            }
 
 
 
-        # ---------------------------------
-        # 最終結果ログ
-        # ---------------------------------
-
-        logger.info(
-            "========== 抽出結果 =========="
-        )
-
-
-        logger.info(
-            "件名 : %s",
-            data.subject
-        )
-
-
-        logger.info(
-            "金額 : %s",
-            data.amount
-        )
-
-
-        if hasattr(
-            data,
-            "delivery_date"
-        ):
+        finally:
 
             logger.info(
-                "納期 : %s",
-                data.delivery_date
+                "========== PDF解析終了 =========="
             )
-
-
-        if hasattr(
-            data,
-            "department"
-        ):
-
-            logger.info(
-                "部署 : %s",
-                data.department
-            )
-
-
-        logger.info(
-            "PDF解析終了"
-        )
-
-
-        return data
