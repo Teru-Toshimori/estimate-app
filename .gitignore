@@ -18,4 +18,3 @@ token_cache.bin
 
 .env
 
-dist/tools/tesseract
