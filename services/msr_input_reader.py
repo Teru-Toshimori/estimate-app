@@ -24,6 +24,8 @@ class MsrRequest:
     source_path: str
     department: str
     request_year: int
+    # 依頼元の上段（例：豊田事業部）。台帳の部署名用
+    department_upper: str = ""
     rows: list = field(default_factory=list)
 
 
@@ -80,6 +82,8 @@ class MsrInputReader:
         self._validate_title(cell(2, 0))
 
         # 依頼元①（I7＋I8）
+        department_upper = str(cell(6, 8) or "").strip()
+
         department = self._join_department(
             cell(6, 8),
             cell(7, 8),
@@ -126,6 +130,7 @@ class MsrInputReader:
         return self._build_request(
             path=path,
             department=department,
+            department_upper=department_upper,
             request_year=request_year,
             rows=rows,
         )
@@ -146,6 +151,10 @@ class MsrInputReader:
             sheet = book[book.sheetnames[0]]
 
         self._validate_title(sheet["A3"].value)
+
+        department_upper = str(
+            sheet["I7"].value or ""
+        ).strip()
 
         department = self._join_department(
             sheet["I7"].value,
@@ -195,6 +204,7 @@ class MsrInputReader:
         return self._build_request(
             path=path,
             department=department,
+            department_upper=department_upper,
             request_year=request_year,
             rows=rows,
         )
@@ -231,6 +241,7 @@ class MsrInputReader:
         self,
         path: str,
         department: str,
+        department_upper: str,
         request_year: int,
         rows: list,
     ) -> MsrRequest:
@@ -243,6 +254,7 @@ class MsrInputReader:
         return MsrRequest(
             source_path=path,
             department=department,
+            department_upper=department_upper,
             request_year=request_year,
             rows=rows,
         )

@@ -65,4 +65,15 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
 
+        if not self.msr_tab.can_close():
+            QMessageBox.warning(
+                self,
+                "確認",
+                "MSRタブで台帳記入処理を実行中のため、"
+                "アプリを終了できません。"
+            )
+
+            event.ignore()
+            return
+
         event.accept()

@@ -4,6 +4,7 @@ import re
 import shutil
 from datetime import datetime
 
+import openpyxl
 import xlwings as xw
 
 from services.msr_input_reader import MsrRequest
@@ -47,11 +48,37 @@ class MsrEstimateWriter:
         r"(\d{1,2})\s*/\s*(\d{1,2})"
     )
 
+    # =====================================
+    # 担当者シート（フォーマットのシート名）一覧
+    # =====================================
+    @staticmethod
+    def list_staff_sheets(format_path: str) -> list:
+        """
+        フォーマットファイルのシート名一覧を取得する。
+
+        担当者名はフォーマットファイル側で変わり得るため、
+        コード側に決め打ちせず、都度ここで読み取る。
+        """
+
+        format_path = os.path.abspath(format_path)
+
+        workbook = openpyxl.load_workbook(
+            format_path,
+            read_only=True,
+        )
+
+        try:
+            return list(workbook.sheetnames)
+
+        finally:
+            workbook.close()
+
     def write(
         self,
         format_path: str,
         output_path: str,
         request: MsrRequest,
+        staff_sheet: str,
     ):
 
         format_path = os.path.abspath(format_path)
@@ -79,8 +106,22 @@ class MsrEstimateWriter:
 
             book = app.books.open(output_path)
 
-            # 先頭シート（渡邉慶）固定
-            sheet = book.sheets[0]
+            sheet_names = [
+                s.name for s in book.sheets
+            ]
+
+            if staff_sheet not in sheet_names:
+                raise ValueError(
+                    "指定された担当者シートが"
+                    "フォーマットファイルに"
+                    "見つかりません。\n"
+                    f"指定：{staff_sheet}\n"
+                    f"フォーマット内のシート："
+                    f"{', '.join(sheet_names)}"
+                )
+
+            # 担当者シート（案件ごとに選択）
+            sheet = book.sheets[staff_sheet]
 
             # =====================================
             # 見積書作成日（実行日）
