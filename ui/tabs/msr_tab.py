@@ -1066,7 +1066,7 @@ class MsrTab(QWidget):
 
                 base_output_name = (
                     self.sanitize_file_name(
-                        request_no
+                        f"【お見積書】{request_no}"
                     )
                 )
 
