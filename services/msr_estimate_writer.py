@@ -7,7 +7,7 @@ from datetime import datetime
 import openpyxl
 
 from services.excel_automation_helper import ExcelAutomationSession
-from services.msr_input_reader import MsrRequest
+from services.msr_input_reader import MsrRequest, MsrRequestRow
 
 
 class MsrEstimateWriter:
@@ -18,19 +18,27 @@ class MsrEstimateWriter:
     出力先へコピーした上でコピー側の
     以下のセルのみ書き換える。
 
+    出力の単位は「Input明細1行（見積依頼番号1件）＝
+    見積書1ファイル」。1つのInputファイルに複数明細が
+    あれば、その数だけ出力する。
+
     K3   見積書作成日（実行日）
     A7   依頼部署①
     F16  作業件名③
-    A20～ No.（1から連番）
-    B20～ 構成内訳③（工事名称＋人月単価）
-    H20～ 数量（暫定固定値。DEFAULT_QUANTITY参照）
-    I20～ 単位（月）
-    J20～ 単価（金額⑤÷数量）
-    K20～ 金額⑤
+    A20  No.（1固定）
+    B20  構成内訳③（工事名称＋人月単価）
+    H20  数量（暫定固定値。DEFAULT_QUANTITY参照）
+    I20  単位（月）
+    J20  単価（金額⑤÷数量）
+    K20  金額⑤
     E34  見積依頼番号②
     J33  納期/受渡 期日（発注期間の各月末）
     J34  検査完了期日（発注期間の各月末）
     B36  納期（作業期間）④
+
+    出力ファイルには選択した担当者シートのみを残し、
+    他の担当者シートは削除する。
+    また、同名のPDFも合わせて出力する。
     """
 
     # 構成内訳のデータ行範囲
@@ -78,6 +86,7 @@ class MsrEstimateWriter:
         format_path: str,
         output_path: str,
         request: MsrRequest,
+        row: MsrRequestRow,
         staff_sheet: str,
     ):
 
@@ -146,67 +155,48 @@ class MsrEstimateWriter:
             # =====================================
             # 作業件名③
             # =====================================
-            sheet.range("F16").value = self._join_unique(
-                [
-                    row.construction_name
-                    for row in request.rows
-                ]
+            sheet.range("F16").value = (
+                row.construction_name
             )
 
             # =====================================
             # 構成内訳③・金額⑤
             # =====================================
-            for i, row in enumerate(request.rows):
+            quantity = self.DEFAULT_QUANTITY
 
-                excel_row = self.DATA_START_ROW + i
+            unit_price = row.amount / quantity
 
-                if excel_row > self.DATA_END_ROW:
-                    break
+            excel_row = self.DATA_START_ROW
 
-                quantity = self.DEFAULT_QUANTITY
+            # No.（1固定）
+            sheet.range(f"A{excel_row}").value = 1
 
-                unit_price = row.amount / quantity
+            sheet.range(f"B{excel_row}").value = (
+                f"{row.construction_name}　"
+                f"人月単価 "
+                f"{self._format_man(unit_price)}万円"
+            )
 
-                # No.（1から連番）
-                sheet.range(f"A{excel_row}").value = (
-                    i + 1
-                )
+            # 数量（暫定固定値）・単位・単価
+            sheet.range(f"H{excel_row}").value = quantity
 
-                sheet.range(f"B{excel_row}").value = (
-                    f"{row.construction_name}　"
-                    f"人月単価 "
-                    f"{self._format_man(unit_price)}万円"
-                )
+            sheet.range(f"I{excel_row}").value = "月"
 
-                # 数量（暫定固定値）・単位・単価
-                sheet.range(f"H{excel_row}").value = (
-                    quantity
-                )
+            sheet.range(f"J{excel_row}").value = unit_price
 
-                sheet.range(f"I{excel_row}").value = "月"
-
-                sheet.range(f"J{excel_row}").value = (
-                    unit_price
-                )
-
-                sheet.range(f"K{excel_row}").value = (
-                    row.amount
-                )
+            sheet.range(f"K{excel_row}").value = row.amount
 
             # =====================================
             # 見積依頼番号②
             # =====================================
-            sheet.range("E34").value = "、".join(
-                row.request_no
-                for row in request.rows
-            )
+            sheet.range("E34").value = row.request_no
 
             # =====================================
             # 納期/受渡・検査完了期日
             # （発注期間の各月末）
             # =====================================
             month_ends = self._month_end_dates(
-                request.rows[0].order_period,
+                row.order_period,
                 request.request_year,
             )
 
@@ -218,7 +208,7 @@ class MsrEstimateWriter:
             # 納期（作業期間）④
             # =====================================
             period_text = self._period_text(
-                request.rows[0].order_period,
+                row.order_period,
                 request.request_year,
             )
 
@@ -227,7 +217,28 @@ class MsrEstimateWriter:
                     f"納期（作業期間） {period_text}"
                 )
 
+            # =====================================
+            # 担当者シート以外は削除
+            # =====================================
+            for other_sheet in list(book.sheets):
+
+                if other_sheet.name != staff_sheet:
+                    other_sheet.delete()
+
             book.save(output_path)
+
+            # =====================================
+            # PDF出力
+            # =====================================
+            pdf_path = (
+                os.path.splitext(output_path)[0]
+                + ".pdf"
+            )
+
+            sheet.api.ExportAsFixedFormat(
+                Type=0,
+                Filename=pdf_path,
+            )
 
         finally:
 
@@ -253,21 +264,6 @@ class MsrEstimateWriter:
             return "　" + department
 
         return "　" + department + "　御中"
-
-    # =====================================
-    # 重複除去して結合
-    # =====================================
-    def _join_unique(self, values):
-
-        unique = []
-
-        for value in values:
-            value = (value or "").strip()
-
-            if value and value not in unique:
-                unique.append(value)
-
-        return "、".join(unique)
 
     # =====================================
     # 発注期間の解析

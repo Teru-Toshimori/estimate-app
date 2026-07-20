@@ -4,13 +4,13 @@ from datetime import datetime
 
 
 from services.excel_automation_helper import ExcelAutomationSession
-from services.msr_input_reader import MsrRequest
+from services.msr_input_reader import MsrRequest, MsrRequestRow
 
 
 class MsrLedgerWriter:
     """
     MSRの管理台帳（見積・請求・注文書発行管理台帳）へ
-    1ファイル分の見積情報を1行記入する。
+    1明細（見積依頼番号1件）分の見積情報を1行記入する。
 
     - 「三井E&Sシステム技研」シートの、
       部署名・案件名・見積金額が空の最初の行へ記入する。
@@ -23,8 +23,8 @@ class MsrLedgerWriter:
     B  No（空欄なら前行＋1）
     C  部署名（Inputの依頼元 上段）
     D  見積/請求番号
-    G  案件名（工事名称　（見積依頼番号、見積依頼番号…）
-    H  見積金額（明細の合計）
+    G  案件名（工事名称　（見積依頼番号））
+    H  見積金額
     I  見積月（発注期間から「7-9月」形式）
     J  発行日（実行日）
     K  発行者（利用者一覧から取得した利用者名）
@@ -50,6 +50,7 @@ class MsrLedgerWriter:
         ledger_path: str,
         estimate_path: str,
         request: MsrRequest,
+        row: MsrRequestRow,
         issuer_name: str,
     ) -> dict:
         """
@@ -131,20 +132,21 @@ class MsrLedgerWriter:
                 request.department_upper
             )
 
-            # 案件名（工事名称　（見積依頼番号、…））
+            # 案件名（工事名称　（見積依頼番号））
             sheet.range(f"G{target_row}").value = (
-                self._build_project_name(request.rows)
+                f"{row.construction_name}　"
+                f"（{row.request_no}）"
             )
 
-            # 見積金額（明細の合計）
-            sheet.range(f"H{target_row}").value = sum(
-                row.amount for row in request.rows
+            # 見積金額
+            sheet.range(f"H{target_row}").value = (
+                row.amount
             )
 
             # 見積月
             sheet.range(f"I{target_row}").value = (
                 self._estimate_month_text(
-                    request.rows[0].order_period
+                    row.order_period
                 )
             )
 
@@ -261,39 +263,6 @@ class MsrLedgerWriter:
             )
 
         return int(previous) + 1
-
-    # =====================================
-    # 重複除去して結合
-    # =====================================
-    def _join_unique(self, values):
-
-        unique = []
-
-        for value in values:
-            value = (value or "").strip()
-
-            if value and value not in unique:
-                unique.append(value)
-
-        return "、".join(unique)
-
-    # =====================================
-    # 案件名の組み立て
-    # 「工事名称　（見積依頼番号、見積依頼番号…）」
-    # 工事名称は重複除去して1つにまとめ、
-    # 見積依頼番号はすべて連結する。
-    # =====================================
-    def _build_project_name(self, rows) -> str:
-
-        construction_name = self._join_unique(
-            [row.construction_name for row in rows]
-        )
-
-        request_numbers = "、".join(
-            row.request_no for row in rows
-        )
-
-        return f"{construction_name}　（{request_numbers}）"
 
     # =====================================
     # 見積月の文字列（例：7-9月）

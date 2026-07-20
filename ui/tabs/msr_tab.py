@@ -1,4 +1,5 @@
 import os
+import re
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
@@ -518,28 +519,6 @@ class MsrTab(QWidget):
             f"失敗：{failed_count}件"
         )
 
-    def build_request_no_text(
-        self,
-        request,
-    ) -> str:
-
-        request_numbers = []
-
-        for row in request.rows:
-            request_no = str(
-                row.request_no or ""
-            ).strip()
-
-            if (
-                request_no
-                and request_no not in request_numbers
-            ):
-                request_numbers.append(
-                    request_no
-                )
-
-        return "、".join(request_numbers)
-
     # =====================================
     # 共通入力
     # =====================================
@@ -915,68 +894,88 @@ class MsrTab(QWidget):
                 )
                 continue
 
-            request_no = self.build_request_no_text(
-                request
-            )
+            # 明細（見積依頼番号）ごとに1ファイル出力
+            for row in request.rows:
 
-            base_output_name = (
-                os.path.splitext(file_name)[0]
-                + "_御見積書"
-            )
+                request_no = row.request_no
 
-            output_path = (
-                self.create_unique_output_path(
-                    output_folder=output_folder,
-                    file_name_base=(
-                        base_output_name
-                    ),
-                    extension=".xlsx",
-                )
-            )
-
-            result_key = output_path
-
-            self.add_result_row(
-                request_no=request_no,
-                estimate_no="",
-                result_text="",
-                result_key=result_key,
-                detail="処理中",
-            )
-
-            try:
-                writer.write(
-                    format_path=template_path,
-                    output_path=output_path,
-                    request=request,
-                    staff_sheet=staff_sheet,
+                base_output_name = (
+                    self.sanitize_file_name(
+                        request_no
+                    )
                 )
 
-                self.transcription_success_count += 1
+                output_path = (
+                    self.create_unique_output_path(
+                        output_folder=output_folder,
+                        file_name_base=(
+                            base_output_name
+                        ),
+                        extension=".xlsx",
+                    )
+                )
 
-                jobs.append({
-                    "file_name": file_name,
-                    "request_no": request_no,
-                    "estimate_path": output_path,
-                    "request": request,
-                    "result_key": result_key,
-                })
+                result_key = output_path
 
-            except Exception as error:
-                self.transcription_fail_count += 1
-
-                self.update_result_row(
-                    result_key=result_key,
+                self.add_result_row(
                     request_no=request_no,
                     estimate_no="",
-                    result_text=self.RESULT_FAILED,
-                    detail=(
-                        f"見積書作成失敗：{file_name}\n"
-                        f"{error}"
-                    ),
+                    result_text="",
+                    result_key=result_key,
+                    detail="処理中",
                 )
 
+                try:
+                    writer.write(
+                        format_path=template_path,
+                        output_path=output_path,
+                        request=request,
+                        row=row,
+                        staff_sheet=staff_sheet,
+                    )
+
+                    self.transcription_success_count += 1
+
+                    jobs.append({
+                        "file_name": file_name,
+                        "request_no": request_no,
+                        "estimate_path": output_path,
+                        "request": request,
+                        "row": row,
+                        "result_key": result_key,
+                    })
+
+                except Exception as error:
+                    self.transcription_fail_count += 1
+
+                    self.update_result_row(
+                        result_key=result_key,
+                        request_no=request_no,
+                        estimate_no="",
+                        result_text=self.RESULT_FAILED,
+                        detail=(
+                            f"見積書作成失敗：{file_name}"
+                            f"（{request_no}）\n"
+                            f"{error}"
+                        ),
+                    )
+
         return jobs
+
+    # =====================================
+    # 出力ファイル名の無害化
+    # （見積依頼番号ベース）
+    # =====================================
+    def sanitize_file_name(
+        self,
+        request_no: str,
+    ) -> str:
+
+        return re.sub(
+            r'[\\/:*?"<>|]',
+            "_",
+            request_no,
+        )
 
     # =====================================
     # 出力パス

@@ -143,6 +143,7 @@ class MsrLedgerUpdateWorker(QObject):
                             job["estimate_path"]
                         ),
                         request=job["request"],
+                        row=job["row"],
                         issuer_name=issuer_name,
                     )
 
