@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from services.app_config import AppConfig
+from services.template_resolver import TemplateResolver
 from services.excel_writer import ExcelWriter
 
 
@@ -19,10 +19,6 @@ class TokuchoOtherExcelWriter:
     実際のExcel転記とPDF変換は、
     既存のExcelWriterへ委譲する。
     """
-
-    TEMPLATE_FILE_NAME = (
-        "TB_見積書フォーマット.xlsx"
-    )
 
     MAX_FILE_NAME_LENGTH = 150
 
@@ -65,18 +61,7 @@ class TokuchoOtherExcelWriter:
             exist_ok=True,
         )
 
-        template_path = (
-            AppConfig.get_base_dir()
-            / "resources"
-            / self.TEMPLATE_FILE_NAME
-        )
-
-        if not template_path.exists():
-            raise FileNotFoundError(
-                "見積書テンプレートが"
-                "見つかりません。\n\n"
-                f"{template_path}"
-            )
+        template_path = TemplateResolver.resolve("tb")
 
         self.prepare_data(
             data

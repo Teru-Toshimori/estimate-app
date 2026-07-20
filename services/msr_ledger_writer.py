@@ -2,8 +2,8 @@ import os
 import re
 from datetime import datetime
 
-import xlwings as xw
 
+from services.excel_automation_helper import ExcelAutomationSession
 from services.msr_input_reader import MsrRequest
 
 
@@ -27,7 +27,7 @@ class MsrLedgerWriter:
     H  見積金額（明細の合計）
     I  見積月（発注期間から「7-9月」形式）
     J  発行日（実行日）
-    K  発行者（空欄のまま）
+    K  発行者（利用者一覧から取得した利用者名）
     """
 
     SHEET_NAME = "三井E&Sシステム技研"
@@ -50,6 +50,7 @@ class MsrLedgerWriter:
         ledger_path: str,
         estimate_path: str,
         request: MsrRequest,
+        issuer_name: str,
     ) -> dict:
         """
         台帳へ1行記入し、出力見積書のK1へ番号を転記する。
@@ -57,6 +58,10 @@ class MsrLedgerWriter:
         戻り値：
             row          記入した台帳の行番号
             estimate_no  採番した見積/請求番号
+
+        issuer_name:
+            OneDriveへサインインしているメールアドレスを
+            利用者一覧Excelで照合して取得した利用者名。
         """
 
         ledger_path = os.path.abspath(ledger_path)
@@ -75,19 +80,25 @@ class MsrLedgerWriter:
                 f"{estimate_path}"
             )
 
-        app = xw.App(visible=False, add_book=False)
-        app.display_alerts = False
-        app.screen_updating = False
-
+        excel_session = ExcelAutomationSession()
+        app = None
         ledger_book = None
         estimate_book = None
 
         try:
+            app = excel_session.start()
 
             # =====================================
             # 台帳へ記入
             # =====================================
-            ledger_book = app.books.open(ledger_path)
+            ledger_book = app.books.open(
+                ledger_path,
+                update_links=False,
+                read_only=False,
+                ignore_read_only_recommended=True,
+                notify=False,
+                add_to_mru=False,
+            )
 
             sheet = ledger_book.sheets[self.SHEET_NAME]
 
@@ -138,18 +149,32 @@ class MsrLedgerWriter:
             )
 
             # 発行日（実行日）
-            sheet.range(f"J{target_row}").value = (
-                datetime.today().strftime("%Y/%m/%d")
+            # 文字列ではなくdatetime値を設定し、
+            # Excelの表示形式をユーザー定義「'yy/m/d」にする。
+            issue_date_cell = sheet.range(
+                f"J{target_row}"
             )
+            issue_date_cell.value = datetime.today().date()
+            issue_date_cell.number_format = "'yy/m/d"
 
-            # 発行者は空欄のまま
+            # 発行者
+            sheet.range(f"K{target_row}").value = (
+                str(issuer_name or "").strip()
+            )
 
             ledger_book.save(ledger_path)
 
             # =====================================
             # 出力見積書のK1へ番号を転記
             # =====================================
-            estimate_book = app.books.open(estimate_path)
+            estimate_book = app.books.open(
+                estimate_path,
+                update_links=False,
+                read_only=False,
+                ignore_read_only_recommended=True,
+                notify=False,
+                add_to_mru=False,
+            )
 
             estimate_sheet = estimate_book.sheets[0]
 
@@ -178,10 +203,7 @@ class MsrLedgerWriter:
             except Exception:
                 pass
 
-            try:
-                app.quit()
-            except Exception:
-                pass
+            excel_session.close()
 
     # =====================================
     # 空行の探索

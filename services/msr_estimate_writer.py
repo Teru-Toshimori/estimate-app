@@ -5,8 +5,8 @@ import shutil
 from datetime import datetime
 
 import openpyxl
-import xlwings as xw
 
+from services.excel_automation_helper import ExcelAutomationSession
 from services.msr_input_reader import MsrRequest
 
 
@@ -96,15 +96,21 @@ class MsrEstimateWriter:
         # フォーマットは改ざんせず、コピーへ書き込む
         shutil.copyfile(format_path, output_path)
 
-        app = xw.App(visible=False, add_book=False)
-        app.display_alerts = False
-        app.screen_updating = False
-
+        excel_session = ExcelAutomationSession()
+        app = None
         book = None
 
         try:
+            app = excel_session.start()
 
-            book = app.books.open(output_path)
+            book = app.books.open(
+                output_path,
+                update_links=False,
+                read_only=False,
+                ignore_read_only_recommended=True,
+                notify=False,
+                add_to_mru=False,
+            )
 
             sheet_names = [
                 s.name for s in book.sheets
@@ -231,10 +237,7 @@ class MsrEstimateWriter:
             except Exception:
                 pass
 
-            try:
-                app.quit()
-            except Exception:
-                pass
+            excel_session.close()
 
     # =====================================
     # 御中追加

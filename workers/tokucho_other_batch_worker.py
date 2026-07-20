@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from services.app_config import AppConfig
+from services.template_resolver import TemplateResolver
 from services.tokucho_other_excel_writer import TokuchoOtherExcelWriter
 from services.ledger_writer import (
     DuplicateApplicationNoError,
@@ -147,20 +147,9 @@ class TokuchoOtherBatchWorker(QObject):
             )
 
             # =====================================
-            # 見積書テンプレート確認
+            # 見積書テンプレート取得
             # =====================================
-            template_path = (
-                AppConfig.get_base_dir()
-                / "resources"
-                / "TB_見積書フォーマット.xlsx"
-            )
-
-            if not template_path.exists():
-                raise FileNotFoundError(
-                    "見積書テンプレートが"
-                    "見つかりません。\n\n"
-                    f"{template_path}"
-                )
+            template_path = TemplateResolver.resolve("tb")
 
             # =====================================
             # サービス生成

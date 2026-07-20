@@ -1,11 +1,9 @@
-import gc
 import os
 import re
 from datetime import datetime
 from pathlib import Path
 
-import xlwings as xw
-import win32print
+from services.excel_automation_helper import ExcelAutomationSession
 
 
 class ExcelWriter:
@@ -27,33 +25,16 @@ class ExcelWriter:
         self._remove_existing_file(output_path)
         self._remove_existing_file(pdf_path)
 
-        original_default_printer = None
-        selected_pdf_printer = None
-
+        session = ExcelAutomationSession()
         app = None
         template_book = None
         output_book = None
         sheet = None
-        print_communication_changed = False
 
         try:
-            # Excel起動前に、利用可能なPDFプリンターを既定へ一時設定する。
-            # 既定プリンターがオフラインの場合に表示される
-            # 「プリンターの接続を待っています」を防ぐ。
-            original_default_printer, selected_pdf_printer = (
-                self._prepare_pdf_printer()
-            )
-
-            app = xw.App(visible=False, add_book=False)
-            self._configure_excel_application(app)
-            self._set_excel_active_printer(app, selected_pdf_printer)
-
-            # PageSetup変更時などに発生するプリンター通信を一時停止する。
-            # Excelや環境によって未対応の場合があるため、安全に設定する。
-            print_communication_changed = self._set_print_communication(
-                app,
-                enabled=False,
-            )
+            # Excel起動、PDFプリンターの一時設定、警告・イベント・
+            # リンク更新・プリンター通信の抑止を共通セッションへ任せる。
+            app = session.start()
 
             # テンプレートを読み取り専用で開く。
             # リンク更新、読み取り専用推奨、通知、最近使ったファイルへの追加を抑止する。
@@ -153,11 +134,9 @@ class ExcelWriter:
                     f"{output_path}"
                 )
 
-            # PDF出力前に、保留していたプリンター通信を有効に戻す。
+            # PDF出力前にプリンター通信を有効に戻す。
             # ExportAsFixedFormatは印刷ダイアログを使わず直接PDF化する。
-            if print_communication_changed:
-                self._set_print_communication(app, enabled=True)
-                print_communication_changed = False
+            session.enable_print_communication()
 
             sheet.api.ExportAsFixedFormat(
                 Type=0,
@@ -175,171 +154,17 @@ class ExcelWriter:
                 )
 
         finally:
-            if app is not None and print_communication_changed:
-                self._set_print_communication(app, enabled=True)
-
+            # ブックを先に閉じてからExcelセッションを終了する。
             self._close_book(output_book)
             self._close_book(template_book)
 
             sheet = None
             output_book = None
             template_book = None
-
-            if app is not None:
-                try:
-                    app.display_alerts = False
-                    app.screen_updating = False
-                except Exception:
-                    pass
-
-                try:
-                    app.quit()
-                except Exception:
-                    try:
-                        app.kill()
-                    except Exception:
-                        pass
-
             app = None
 
-            # アプリ実行前の既定プリンターへ戻す。
-            self._restore_default_printer(original_default_printer)
-
-            gc.collect()
-
-
-    # =====================================
-    # プリンター設定
-    # =====================================
-    def _prepare_pdf_printer(self) -> tuple[str | None, str]:
-        """
-        Excel起動前に利用可能なPDFプリンターを既定へ一時設定する。
-
-        戻り値:
-            (元の既定プリンター名, 使用するPDFプリンター名)
-        """
-        try:
-            original_printer = win32print.GetDefaultPrinter()
-        except Exception:
-            original_printer = None
-
-        available_printers = {
-            printer_info[2]
-            for printer_info in win32print.EnumPrinters(
-                win32print.PRINTER_ENUM_LOCAL
-                | win32print.PRINTER_ENUM_CONNECTIONS
-            )
-        }
-
-        preferred_printers = (
-            "Microsoft Print to PDF",
-            "Microsoft XPS Document Writer",
-        )
-
-        selected_printer = next(
-            (
-                printer_name
-                for printer_name in preferred_printers
-                if printer_name in available_printers
-            ),
-            None,
-        )
-
-        if selected_printer is None:
-            raise RuntimeError(
-                "PDF出力に使用できるプリンターが見つかりません。\n\n"
-                "Windowsの『Microsoft Print to PDF』を有効にしてください。"
-            )
-
-        try:
-            win32print.SetDefaultPrinter(selected_printer)
-        except Exception as error:
-            raise RuntimeError(
-                "PDF出力用プリンターを一時設定できませんでした。\n\n"
-                f"プリンター：{selected_printer}"
-            ) from error
-
-        return original_printer, selected_printer
-
-    def _set_excel_active_printer(self, app, printer_name: str | None) -> None:
-        """Excel側でも使用プリンターを明示する。"""
-        if not printer_name:
-            return
-
-        # ActivePrinterは環境によってポート名を含む表記を要求する。
-        # 既定プリンターは先に切り替えてあるため、失敗しても処理は継続する。
-        try:
-            app.api.ActivePrinter = printer_name
-            return
-        except Exception:
-            pass
-
-        try:
-            printer_handle = win32print.OpenPrinter(printer_name)
-            try:
-                printer_info = win32print.GetPrinter(printer_handle, 2)
-                port_name = printer_info.get("pPortName", "")
-            finally:
-                win32print.ClosePrinter(printer_handle)
-
-            if port_name:
-                app.api.ActivePrinter = f"{printer_name} on {port_name}"
-        except Exception:
-            pass
-
-    def _restore_default_printer(self, printer_name: str | None) -> None:
-        """処理前の既定プリンターへ戻す。"""
-        if not printer_name:
-            return
-
-        try:
-            win32print.SetDefaultPrinter(printer_name)
-        except Exception:
-            # 復元失敗は見積書作成自体のエラーにはしない。
-            pass
-
-
-    # =====================================
-    # Excelアプリケーション設定
-    # =====================================
-    def _configure_excel_application(self, app) -> None:
-        """
-        自動処理中の画面表示、確認メッセージ、リンク更新、
-        マクロ、イベントなどを可能な範囲で抑止する。
-        """
-        app.visible = False
-        app.display_alerts = False
-        app.screen_updating = False
-
-        api_settings = {
-            "DisplayAlerts": False,
-            "ScreenUpdating": False,
-            "EnableEvents": False,
-            "AskToUpdateLinks": False,
-            "Interactive": False,
-            # msoAutomationSecurityForceDisable
-            "AutomationSecurity": 3,
-        }
-
-        for property_name, value in api_settings.items():
-            try:
-                setattr(app.api, property_name, value)
-            except Exception:
-                # Excelのバージョンや環境によって利用できない
-                # プロパティがあるため、その設定だけをスキップする。
-                pass
-
-    def _set_print_communication(self, app, enabled: bool) -> bool:
-        """
-        Excelのプリンター通信を切り替える。
-
-        設定に成功した場合はTrue、未対応・失敗時はFalseを返す。
-        """
-        try:
-            app.api.PrintCommunication = enabled
-            return True
-        except Exception:
-            return False
+            # Excel終了と既定プリンターの復元を必ず行う。
+            session.close()
 
     # =====================================
     # ファイル・ブック操作
