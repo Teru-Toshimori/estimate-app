@@ -5,10 +5,13 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
+    QFileDialog,
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QProgressBar,
@@ -20,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from services.msr_estimate_writer import MsrEstimateWriter
 from services.msr_input_reader import MsrInputReader
+from services.msr_ledger_writer import MsrLedgerWriter
 from services.template_resolver import TemplateResolver
 from ui.device_login_dialog import DeviceLoginDialog
 from workers.msr_ledger_update_worker import (
@@ -143,6 +147,48 @@ class MsrTab(QWidget):
         main_layout.addLayout(staff_layout)
 
         self.load_staff_sheets()
+
+        # =====================================
+        # ▼▼▼ デバッグ用（OneDrive未承認の間の暫定）
+        # OneDriveが承認されたら、この区画一式
+        # （debug_local_checkbox〜local_ledger_layout）
+        # と、execute_all内の分岐・
+        # run_ledger_write_localメソッドを削除する。
+        # =====================================
+        self.debug_local_checkbox = QCheckBox(
+            "デバッグ用：ローカルの管理台帳ファイルを使用する"
+            "（OneDrive未承認の間の暫定）"
+        )
+        main_layout.addWidget(
+            self.debug_local_checkbox
+        )
+
+        local_ledger_layout = QHBoxLayout()
+
+        self.local_ledger_edit = QLineEdit()
+        self.local_ledger_edit.setEnabled(False)
+
+        self.local_ledger_button = QPushButton(
+            "参照"
+        )
+        self.local_ledger_button.setEnabled(False)
+
+        local_ledger_layout.addWidget(
+            self.local_ledger_edit
+        )
+        local_ledger_layout.addWidget(
+            self.local_ledger_button
+        )
+        main_layout.addLayout(local_ledger_layout)
+
+        self.debug_local_checkbox.toggled.connect(
+            self.on_debug_local_toggled
+        )
+        self.local_ledger_button.clicked.connect(
+            self.select_local_ledger_file
+        )
+        # ▲▲▲ デバッグ用ここまで
+        # =====================================
 
         # 操作ボタン
         self.execute_all_button = QPushButton(
@@ -309,6 +355,32 @@ class MsrTab(QWidget):
             return
 
         self.staff_combo.addItems(sheet_names)
+
+    # =====================================
+    # デバッグ用（OneDrive未承認の間の暫定）
+    # OneDrive承認後、この2メソッドごと削除する。
+    # =====================================
+    def on_debug_local_toggled(
+        self,
+        checked: bool,
+    ) -> None:
+
+        self.local_ledger_edit.setEnabled(checked)
+        self.local_ledger_button.setEnabled(checked)
+
+    def select_local_ledger_file(self) -> None:
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "管理台帳ファイルを選択",
+            "",
+            "Excelファイル (*.xlsx *.xlsm)",
+        )
+
+        if file_path:
+            self.local_ledger_edit.setText(
+                file_path
+            )
 
     # =====================================
     # 表示制御
@@ -602,7 +674,23 @@ class MsrTab(QWidget):
             "user_master_url"
         ]
 
-        if not self.validate_inputs(
+        # デバッグ用（OneDrive未承認の間の暫定）
+        debug_local = (
+            self.debug_local_checkbox.isChecked()
+        )
+        local_ledger_path = (
+            self.local_ledger_edit.text().strip()
+        )
+
+        if debug_local:
+            if not self.validate_inputs_debug_local(
+                input_folder=input_folder,
+                output_folder=output_folder,
+                local_ledger_path=local_ledger_path,
+            ):
+                return
+
+        elif not self.validate_inputs(
             input_folder=input_folder,
             output_folder=output_folder,
             share_url=share_url,
@@ -701,6 +789,14 @@ class MsrTab(QWidget):
             self.finish_without_ledger_jobs()
             return
 
+        # デバッグ用（OneDrive未承認の間の暫定）
+        if debug_local:
+            self.run_ledger_write_local(
+                ledger_path=local_ledger_path,
+                jobs=jobs,
+            )
+            return
+
         self.start_ledger_update(
             share_url=share_url,
             user_master_url=user_master_url,
@@ -787,6 +883,75 @@ class MsrTab(QWidget):
                 "確認",
                 "利用者一覧URLの形式が"
                 "正しくありません。",
+            )
+            return False
+
+        return True
+
+    # =====================================
+    # デバッグ用（OneDrive未承認の間の暫定）
+    # OneDrive承認後、このメソッドごと削除する。
+    # =====================================
+    def validate_inputs_debug_local(
+        self,
+        input_folder: str,
+        output_folder: str,
+        local_ledger_path: str,
+    ) -> bool:
+
+        if not input_folder:
+            QMessageBox.warning(
+                self,
+                "確認",
+                "共通入力の「見積書発行依頼フォルダ」を"
+                "選択してください。",
+            )
+            return False
+
+        if not os.path.isdir(input_folder):
+            QMessageBox.warning(
+                self,
+                "確認",
+                "見積書発行依頼フォルダが"
+                "見つかりません。\n\n"
+                f"{input_folder}",
+            )
+            return False
+
+        if not output_folder:
+            QMessageBox.warning(
+                self,
+                "確認",
+                "出力先フォルダを選択してください。",
+            )
+            return False
+
+        if not os.path.isdir(output_folder):
+            QMessageBox.warning(
+                self,
+                "確認",
+                "出力先フォルダが"
+                "見つかりません。\n\n"
+                f"{output_folder}",
+            )
+            return False
+
+        if not local_ledger_path:
+            QMessageBox.warning(
+                self,
+                "確認",
+                "デバッグ用の管理台帳ファイルを"
+                "選択してください。",
+            )
+            return False
+
+        if not os.path.exists(local_ledger_path):
+            QMessageBox.warning(
+                self,
+                "確認",
+                "管理台帳ファイルが"
+                "見つかりません。\n\n"
+                f"{local_ledger_path}",
             )
             return False
 
@@ -1091,6 +1256,128 @@ class MsrTab(QWidget):
         )
 
         self.ledger_thread.start()
+
+    # =====================================
+    # デバッグ用（OneDrive未承認の間の暫定）
+    # ローカル台帳記入（同期実行）
+    # OneDrive承認後、このメソッドごと削除する。
+    # =====================================
+    def run_ledger_write_local(
+        self,
+        ledger_path: str,
+        jobs: list[dict],
+    ) -> None:
+
+        self.set_processing_state(
+            True,
+            "台帳記入中（ローカル）...",
+        )
+
+        self.update_progress(
+            0,
+            len(jobs),
+            "管理台帳を準備中",
+        )
+
+        ledger_writer = MsrLedgerWriter()
+
+        success_count = 0
+        fail_count = 0
+
+        try:
+            for index, job in enumerate(
+                jobs,
+                start=1,
+            ):
+                QApplication.processEvents()
+
+                self.update_progress(
+                    index,
+                    len(jobs),
+                    job["file_name"],
+                )
+                self.set_status(
+                    "台帳記入中（ローカル）："
+                    f"{job['file_name']}"
+                )
+                QApplication.processEvents()
+
+                try:
+                    result = ledger_writer.write(
+                        ledger_path=ledger_path,
+                        estimate_path=(
+                            job["estimate_path"]
+                        ),
+                        request=job["request"],
+                        row=job["row"],
+                        issuer_name="",
+                    )
+
+                    success_count += 1
+
+                    self.update_result_row(
+                        result_key=(
+                            job["result_key"]
+                        ),
+                        request_no=(
+                            job["request_no"]
+                        ),
+                        estimate_no=(
+                            f"No.{result['estimate_no']}"
+                        ),
+                        result_text=(
+                            self.RESULT_SUCCESS
+                        ),
+                        detail=(
+                            f"台帳{result['row']}行目へ"
+                            "記入しました。"
+                        ),
+                    )
+
+                except Exception as error:
+                    fail_count += 1
+
+                    self.update_result_row(
+                        result_key=(
+                            job["result_key"]
+                        ),
+                        request_no=(
+                            job["request_no"]
+                        ),
+                        estimate_no="",
+                        result_text=(
+                            self.RESULT_FAILED
+                        ),
+                        detail=(
+                            "台帳記入に失敗しました。\n"
+                            f"{error}"
+                        ),
+                    )
+
+            transcription_summary = (
+                self.build_transcription_summary()
+            )
+            ledger_summary = (
+                f"台帳記入 完了 {success_count} 件、"
+                f"失敗 {fail_count} 件"
+            )
+
+            self.set_status(
+                "一括処理が終了しました。"
+                f"（{transcription_summary}／"
+                f"{ledger_summary}）"
+            )
+
+            QMessageBox.information(
+                self,
+                "完了",
+                "一括処理が終了しました。\n\n"
+                f"{transcription_summary}\n"
+                f"{ledger_summary}",
+            )
+
+        finally:
+            self.set_processing_state(False)
 
     # =====================================
     # 中止
