@@ -7,9 +7,47 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
 
 
+class DuplicateApplicationNoError(Exception):
+    """
+    業務計画書Noが管理台帳へ
+    すでに登録されている場合の専用エラー。
+    """
+
+    def __init__(
+        self,
+        application_no: str,
+        sheet_name: str,
+        row_number: int,
+    ):
+        self.application_no = application_no
+        self.sheet_name = sheet_name
+        self.row_number = row_number
+
+        super().__init__(
+            f"業務計画書No「{application_no}」は"
+            "管理台帳に登録済みです。\n"
+            f"シート：{sheet_name}\n"
+            f"行番号：{row_number}"
+        )
+
+
 class LedgerWriter:
     """
     管理台帳へ新しい行を追加する。
+
+    追加する内容:
+        B列：No
+        C列：部署名
+        D列：見積／請求番号
+        F列：業務計画書No
+        G列：車種コード
+        H列：委託金額
+        I列：見積月
+        J列：発行日
+        K列：発行者
+
+    採番前に、管理台帳の全シートを対象として
+    F列に同じ業務計画書Noが存在しないか確認する。
     """
 
     def write(
@@ -26,11 +64,18 @@ class LedgerWriter:
                 一時ダウンロードした管理台帳のパス
 
             data:
-                EstimateData
+                EstimateDataオブジェクト
 
             issuer_name:
-                Microsoft Graphから取得した
-                メールアドレスまたはアカウント名
+                Microsoft Graphおよび利用者リストから
+                取得した利用者名
+
+        Returns:
+            採番結果や追加行情報を格納した辞書
+
+        Raises:
+            DuplicateApplicationNoError:
+                業務計画書Noが登録済みの場合
         """
 
         workbook = load_workbook(
@@ -38,24 +83,97 @@ class LedgerWriter:
             keep_links=False,
         )
 
-        sheet = None
-
         try:
+            # =====================================
+            # 業務委託計画書Noを数値へ変換
+            # 帳票によって存在しないため任意項目とする。
+            # ITK14642 → 14642
+            # 空欄      → None
+            # =====================================
+            application_no_text = str(
+                getattr(
+                    data,
+                    "application_no",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            application_number = (
+                self.to_int(application_no_text)
+                if application_no_text
+                else None
+            )
+
+            if (
+                application_no_text
+                and (
+                    application_number is None
+                    or application_number <= 0
+                )
+            ):
+                raise ValueError(
+                    "業務委託計画書Noを数値として"
+                    "取得できませんでした。\n\n"
+                    f"取得値：{application_no_text}"
+                )
+
+            # =====================================
+            # 業務委託計画書Noがある場合だけ重複確認
+            # =====================================
+            if application_number is not None:
+                duplicate_info = (
+                    self.find_duplicate_application_no(
+                        workbook=workbook,
+                        application_no=application_number,
+                    )
+                )
+
+                if duplicate_info is not None:
+                    duplicate_sheet, duplicate_row = (
+                        duplicate_info
+                    )
+
+                    raise DuplicateApplicationNoError(
+                        application_no=application_no_text,
+                        sheet_name=duplicate_sheet.title,
+                        row_number=duplicate_row,
+                    )
+
+            # =====================================
+            # 依頼部署から対象シートを検索
+            # =====================================
             sheet = self.find_sheet_by_department(
-                workbook,
-                data.department,
+                workbook=workbook,
+                department=data.department,
             )
 
             if sheet is None:
                 raise ValueError(
                     "依頼部署に該当するシートが"
-                    "見つかりません。\n"
+                    "見つかりません。\n\n"
                     f"依頼部署：{data.department}"
                 )
 
-            last_row = self.find_last_row(sheet)
+            # =====================================
+            # 最終行と追加行を取得
+            # =====================================
+            last_row = self.find_last_row(
+                sheet
+            )
+
+            if last_row <= 1:
+                raise ValueError(
+                    "管理台帳の最終データ行を"
+                    "取得できませんでした。\n\n"
+                    f"シート：{sheet.title}"
+                )
+
             new_row = last_row + 1
 
+            # =====================================
+            # 前行の採番値を取得
+            # =====================================
             previous_no = sheet[
                 f"B{last_row}"
             ].value
@@ -65,36 +183,64 @@ class LedgerWriter:
             ].value
 
             new_no = (
-                self.to_int(previous_no) + 1
+                self.to_int(previous_no)
+                + 1
             )
 
             new_estimate_no = (
                 self.to_int(
                     previous_estimate_no
-                ) + 1
+                )
+                + 1
             )
 
+            if new_no <= 1:
+                raise ValueError(
+                    "管理台帳のNoを"
+                    "採番できませんでした。\n\n"
+                    f"前行の値：{previous_no}"
+                )
+
+            if new_estimate_no <= 1:
+                raise ValueError(
+                    "見積／請求番号を"
+                    "採番できませんでした。\n\n"
+                    f"前行の値：{previous_estimate_no}"
+                )
+
+            # =====================================
+            # 日付・見積月・発行者
+            # =====================================
             today = datetime.today()
 
             estimate_month = (
-                self.get_next_month_text(today)
+                self.get_next_month_text(
+                    today
+                )
             )
 
-            # Microsoftアカウント情報が空なら、
-            # Windowsログインユーザー名を使用
             user_name = (
                 issuer_name.strip()
-                if issuer_name
-                and issuer_name.strip()
+                if (
+                    issuer_name
+                    and issuer_name.strip()
+                )
                 else getpass.getuser()
             )
 
-            # ITK14642 → 14642
-            application_number = self.to_int(
-                data.application_no
+            # =====================================
+            # 委託金額を数値へ変換
+            # =====================================
+            amount_value = (
+                self.normalize_amount(
+                    data.amount
+                )
             )
 
+            # =====================================
             # 前行の書式を新しい行へコピー
+            # B列～L列
+            # =====================================
             self.copy_row_style(
                 sheet=sheet,
                 source_row=last_row,
@@ -103,45 +249,68 @@ class LedgerWriter:
                 end_column=12,
             )
 
-            # =============================
+            # =====================================
             # 値の書き込み
-            # =============================
-            sheet[f"B{new_row}"] = new_no
+            # =====================================
 
-            sheet[f"C{new_row}"] = (
-                data.department
-            )
+            # B列：No
+            sheet[
+                f"B{new_row}"
+            ] = new_no
 
-            sheet[f"D{new_row}"] = (
-                new_estimate_no
-            )
+            # C列：部署名
+            sheet[
+                f"C{new_row}"
+            ] = data.department
 
-            sheet[f"F{new_row}"] = (
+            # D列：見積／請求番号
+            sheet[
+                f"D{new_row}"
+            ] = new_estimate_no
+
+            # F列：業務委託計画書No
+            # 番号がない帳票では空欄にする。
+            sheet[
+                f"F{new_row}"
+            ] = (
                 application_number
+                if application_number is not None
+                else "-"
             )
 
-            sheet[f"G{new_row}"] = (
-                data.model_code
-            )
+            # G列：車種コード
+            sheet[
+                f"G{new_row}"
+            ] = data.model_code
 
-            sheet[f"I{new_row}"] = (
-                estimate_month
-            )
+            # H列：委託金額
+            sheet[
+                f"H{new_row}"
+            ] = amount_value
 
-            # 日付のみを書き込む
-            sheet[f"J{new_row}"] = (
-                today.date()
-            )
+            # I列：見積月
+            sheet[
+                f"I{new_row}"
+            ] = estimate_month
 
-            # Microsoftアカウントのメール等
-            sheet[f"K{new_row}"] = user_name
+            # J列：発行日
+            sheet[
+                f"J{new_row}"
+            ] = today.date()
 
-            # =============================
-            # フォント
+            # K列：発行者
+            sheet[
+                f"K{new_row}"
+            ] = user_name
+
+            # =====================================
+            # フォント設定
             # B列～L列
-            # =============================
-            for column in range(2, 13):
-
+            # =====================================
+            for column in range(
+                2,
+                13,
+            ):
                 cell = sheet.cell(
                     row=new_row,
                     column=column,
@@ -166,14 +335,15 @@ class LedgerWriter:
                     ),
                 )
 
-            # =============================
-            # 配置
-            # =============================
+            # =====================================
+            # 配置設定
+            # =====================================
 
-            # C列・G列は左右中央揃えを解除し、
-            # 前行の左右配置を保持する
-            for column_letter in ("C", "G"):
-
+            # C列・G列は前行の左右配置を維持
+            for column_letter in (
+                "C",
+                "G",
+            ):
                 cell = sheet[
                     f"{column_letter}{new_row}"
                 ]
@@ -198,16 +368,16 @@ class LedgerWriter:
                     ),
                 )
 
-            # その他の入力セルは中央揃え
+            # その他の入力セルは上下・左右中央揃え
             for column_letter in (
                 "B",
                 "D",
                 "F",
+                "H",
                 "I",
                 "J",
                 "K",
             ):
-
                 cell = sheet[
                     f"{column_letter}{new_row}"
                 ]
@@ -230,24 +400,33 @@ class LedgerWriter:
                     ),
                 )
 
-            # =============================
-            # 表示形式
-            # =============================
+            # =====================================
+            # 数値・日付の表示形式
+            # =====================================
 
-            # F列：数値のまま保持し、
-            # Excel表示時にITKを付ける
+            # F列：業務委託計画書Noがある場合のみ表示形式を設定
+            if application_number is not None:
+                sheet[
+                    f"F{new_row}"
+                ].number_format = '"ITK"0'
+            else:
+                sheet[
+                    f"F{new_row}"
+                ].number_format = "@"
+
+            # H列：3桁カンマ区切り
             sheet[
-                f"F{new_row}"
-            ].number_format = '"ITK"0'
+                f"H{new_row}"
+            ].number_format = '#,##0'
 
             # J列：日付のみ表示
             sheet[
                 f"J{new_row}"
             ].number_format = "yyyy/mm/dd"
 
-            # =============================
-            # B列幅
-            # =============================
+            # =====================================
+            # B列幅を内容に合わせて調整
+            # =====================================
             self.adjust_column_width(
                 sheet=sheet,
                 column_letter="B",
@@ -255,22 +434,131 @@ class LedgerWriter:
                 maximum_width=12,
             )
 
-            workbook.save(excel_path)
+            # =====================================
+            # 保存
+            # =====================================
+            workbook.save(
+                excel_path
+            )
 
             return {
                 "sheet_name": sheet.title,
                 "row": new_row,
+                "no": str(new_no),
                 "estimate_no": str(
                     new_estimate_no
                 ),
-                "issue_date": today.strftime(
-                    "%Y/%m/%d"
+                "issue_date": (
+                    today.strftime(
+                        "%Y/%m/%d"
+                    )
                 ),
+                "issuer_name": user_name,
                 "user_name": user_name,
+                "amount": amount_value,
+                "application_no": (
+                    application_number
+                    if application_number is not None
+                    else "-"
+                ),
             }
 
         finally:
             workbook.close()
+
+    # =====================================
+    # 全シートのF列から重複確認
+    # =====================================
+    def find_duplicate_application_no(
+        self,
+        workbook,
+        application_no: int,
+    ):
+        """
+        管理台帳の全シートについて、
+        F列に同じ業務計画書Noがないか検索する。
+
+        Excelのセル値が次のいずれでも
+        同じ番号として比較する。
+
+            14642
+            ITK14642
+            14,642
+            14642.0
+
+        Returns:
+            重複あり:
+                (該当シート, 行番号)
+
+            重複なし:
+                None
+        """
+
+        if application_no <= 0:
+            return None
+
+        for sheet in workbook.worksheets:
+            duplicate_row = (
+                self.find_application_no_row(
+                    sheet=sheet,
+                    application_no=application_no,
+                )
+            )
+
+            if duplicate_row is not None:
+                return (
+                    sheet,
+                    duplicate_row,
+                )
+
+        return None
+
+    # =====================================
+    # 指定シートのF列から業務計画書No検索
+    # =====================================
+    def find_application_no_row(
+        self,
+        sheet,
+        application_no: int,
+    ) -> int | None:
+        """
+        指定シートのF列から、
+        業務計画書Noを検索する。
+
+        一致した場合は行番号を返す。
+        一致しない場合はNoneを返す。
+        """
+
+        if application_no <= 0:
+            return None
+
+        for row_number in range(
+            1,
+            sheet.max_row + 1,
+        ):
+            cell_value = sheet[
+                f"F{row_number}"
+            ].value
+
+            if cell_value is None:
+                continue
+
+            registered_number = (
+                self.to_int(
+                    cell_value
+                )
+            )
+
+            if registered_number <= 0:
+                continue
+
+            if (
+                registered_number
+                == application_no
+            ):
+                return row_number
+
+        return None
 
     # =====================================
     # 全シートのC列から依頼部署を検索
@@ -280,9 +568,15 @@ class LedgerWriter:
         workbook,
         department: str,
     ):
+        """
+        全シートのC列を検索し、
+        依頼部署と一致する値があるシートを返す。
+        """
 
         normalized_department = (
-            self.normalize_text(department)
+            self.normalize_text(
+                department
+            )
         )
 
         if not normalized_department:
@@ -301,6 +595,9 @@ class LedgerWriter:
                     )
                 )
 
+                if not normalized_value:
+                    continue
+
                 if (
                     normalized_value
                     == normalized_department
@@ -318,25 +615,29 @@ class LedgerWriter:
     # =====================================
     def normalize_text(
         self,
-        text,
+        value,
     ) -> str:
+        """
+        検索比較用に文字列を正規化する。
 
-        if text is None:
+        ・全角英数字を半角へ統一
+        ・前後空白を除去
+        ・半角・全角スペースを除去
+        """
+
+        if value is None:
             return ""
 
         normalized = unicodedata.normalize(
             "NFKC",
-            str(text).strip(),
+            str(value),
         )
 
-        normalized = normalized.replace(
-            "　",
-            "",
-        )
-
-        normalized = normalized.replace(
-            " ",
-            "",
+        normalized = (
+            normalized
+            .strip()
+            .replace("　", "")
+            .replace(" ", "")
         )
 
         return normalized
@@ -348,19 +649,24 @@ class LedgerWriter:
         self,
         sheet,
     ) -> int:
+        """
+        B列を下から検索し、
+        最後に値が入力されている行を返す。
+        """
 
         for row_number in range(
             sheet.max_row,
             1,
             -1,
         ):
+            value = sheet[
+                f"B{row_number}"
+            ].value
 
-            if (
-                sheet[
-                    f"B{row_number}"
-                ].value
-                is not None
-            ):
+            if value is None:
+                continue
+
+            if str(value).strip():
                 return row_number
 
         return 1
@@ -372,17 +678,57 @@ class LedgerWriter:
         self,
         value,
     ) -> int:
+        """
+        値から数字部分を取り出し、
+        intへ変換する。
+
+        例:
+            ITK14642 → 14642
+            16,107,097 → 16107097
+            14642.0 → 14642
+        """
 
         if value is None:
             return 0
 
-        text = str(value).strip()
+        if isinstance(
+            value,
+            bool,
+        ):
+            return 0
+
+        if isinstance(
+            value,
+            int,
+        ):
+            return value
+
+        if isinstance(
+            value,
+            float,
+        ):
+            return int(value)
+
+        text = unicodedata.normalize(
+            "NFKC",
+            str(value),
+        ).strip()
+
+        text_without_commas = (
+            text.replace(",", "")
+        )
 
         try:
-            return int(text)
+            return int(
+                float(
+                    text_without_commas
+                )
+            )
 
-        except (TypeError, ValueError):
-
+        except (
+            TypeError,
+            ValueError,
+        ):
             digits = "".join(
                 character
                 for character in text
@@ -396,12 +742,92 @@ class LedgerWriter:
             )
 
     # =====================================
+    # 委託金額の変換
+    # =====================================
+    def normalize_amount(
+        self,
+        value,
+    ) -> int | str:
+        """
+        委託金額をExcelへ書き込める形に整える。
+
+        例:
+            ￥924,000
+            ¥924,000
+            924,000円
+            924000
+            924000.0
+
+        戻り値:
+            924000
+
+        数値化できない場合は、
+        元の文字列を返す。
+        """
+
+        if value is None:
+            return ""
+
+        if isinstance(
+            value,
+            bool,
+        ):
+            return ""
+
+        if isinstance(
+            value,
+            int,
+        ):
+            return value
+
+        if isinstance(
+            value,
+            float,
+        ):
+            return int(value)
+
+        text = unicodedata.normalize(
+            "NFKC",
+            str(value),
+        )
+
+        text = (
+            text
+            .strip()
+            .replace("￥", "")
+            .replace("¥", "")
+            .replace("\\", "")
+            .replace(",", "")
+            .replace("円", "")
+            .replace("税込", "")
+            .replace("税抜", "")
+            .replace(" ", "")
+            .replace("　", "")
+        )
+
+        try:
+            return int(
+                float(text)
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return str(
+                value
+            ).strip()
+
+    # =====================================
     # 翌月を「8月」形式で返す
     # =====================================
     def get_next_month_text(
         self,
         date_value: datetime,
     ) -> str:
+        """
+        指定日の翌月を「8月」の形式で返す。
+        """
 
         next_month = (
             date_value.month + 1
@@ -423,6 +849,11 @@ class LedgerWriter:
         start_column: int,
         end_column: int,
     ) -> None:
+        """
+        前行のフォント、塗りつぶし、罫線、
+        配置、表示形式、保護、行の高さを
+        新しい行へコピーする。
+        """
 
         source_height = (
             sheet.row_dimensions[
@@ -439,7 +870,6 @@ class LedgerWriter:
             start_column,
             end_column + 1,
         ):
-
             source_cell = sheet.cell(
                 row=source_row,
                 column=column,
@@ -450,31 +880,32 @@ class LedgerWriter:
                 column=column,
             )
 
-            if source_cell.has_style:
+            if not source_cell.has_style:
+                continue
 
-                target_cell.font = copy(
-                    source_cell.font
-                )
+            target_cell.font = copy(
+                source_cell.font
+            )
 
-                target_cell.fill = copy(
-                    source_cell.fill
-                )
+            target_cell.fill = copy(
+                source_cell.fill
+            )
 
-                target_cell.border = copy(
-                    source_cell.border
-                )
+            target_cell.border = copy(
+                source_cell.border
+            )
 
-                target_cell.alignment = copy(
-                    source_cell.alignment
-                )
+            target_cell.alignment = copy(
+                source_cell.alignment
+            )
 
-                target_cell.number_format = (
-                    source_cell.number_format
-                )
+            target_cell.number_format = (
+                source_cell.number_format
+            )
 
-                target_cell.protection = copy(
-                    source_cell.protection
-                )
+            target_cell.protection = copy(
+                source_cell.protection
+            )
 
     # =====================================
     # 列幅調整
@@ -486,11 +917,15 @@ class LedgerWriter:
         minimum_width: float = 4,
         maximum_width: float = 50,
     ) -> None:
+        """
+        指定列の内容に合わせて列幅を調整する。
+        """
 
         maximum_length = 0
 
-        for cell in sheet[column_letter]:
-
+        for cell in sheet[
+            column_letter
+        ]:
             if cell.value is None:
                 continue
 
@@ -498,8 +933,13 @@ class LedgerWriter:
                 str(cell.value)
             )
 
-            if text_length > maximum_length:
-                maximum_length = text_length
+            if (
+                text_length
+                > maximum_length
+            ):
+                maximum_length = (
+                    text_length
+                )
 
         calculated_width = (
             maximum_length + 2

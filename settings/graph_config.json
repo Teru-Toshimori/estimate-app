@@ -1,9 +1,9 @@
 {
   "client_id": "23e7ec33-d86b-45c5-b278-5c6b45d02b98",
   "tenant_id": "ef501709-5a34-4611-9ba4-8ad780d88995",
-  "user_master_url": "https://otameshisharepoint-my.sharepoint.com/:x:/g/personal/teru_toshimori_otameshisharepoint_onmicrosoft_com/IQAxlcofs-vSQa1DDIJGCJaVAScZ7ABTk1wM6al5WjR6E7w?e=0cG5xj",
   "scopes": [
     "User.Read",
-    "Files.ReadWrite"
+    "Files.ReadWrite",
+    "Files.ReadWrite.All"
   ]
 }

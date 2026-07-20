@@ -20,8 +20,27 @@ class GraphAuth:
 
         self.client_id = config["client_id"]
         self.tenant_id = config["tenant_id"]
-        self.authority = config["authority"]
         self.scopes = config["scopes"]
+
+        if not self.client_id:
+            raise ValueError(
+                "client_idが設定されていません。"
+            )
+
+        if not self.tenant_id:
+            raise ValueError(
+                "tenant_idが設定されていません。"
+            )
+
+        if not self.scopes:
+            raise ValueError(
+                "scopesが設定されていません。"
+            )
+
+        self.authority = (
+            "https://login.microsoftonline.com/"
+            f"{self.tenant_id}"
+        )
 
         self.cache_path = self._get_cache_path()
         self.cache = msal.SerializableTokenCache()
@@ -34,7 +53,6 @@ class GraphAuth:
                 self.cache.deserialize(cache_text)
 
             except Exception:
-                # キャッシュ破損時は新規認証へ進む
                 pass
 
         self.app = msal.PublicClientApplication(
@@ -89,13 +107,30 @@ class GraphAuth:
                 f"{flow}"
             )
 
+        # ブラウザで開くURLを明示的に設定
+        flow["verification_uri"] = (
+            flow.get("verification_uri")
+            or "https://microsoft.com/devicelogin"
+        )
+
+        if (
+            "deviceauth"
+            in flow["verification_uri"].lower()
+        ):
+            flow["verification_uri"] = (
+                "https://microsoft.com/devicelogin"
+            )
+
         if self.device_flow_callback:
             self.device_flow_callback(flow)
-
         else:
             print(flow.get("message", ""))
 
-        return self.app.acquire_token_by_device_flow(flow)
+        return (
+            self.app.acquire_token_by_device_flow(
+                flow
+            )
+        )
 
     def _save_cache(self):
         if self.cache.has_state_changed:

@@ -91,13 +91,6 @@ class AppConfig:
             )
         ).strip()
 
-        user_master_url = str(
-            config.get(
-                "user_master_url",
-                "",
-            )
-        ).strip()
-
         scopes = config.get(
             "scopes",
             [
@@ -116,20 +109,6 @@ class AppConfig:
             raise ValueError(
                 "graph_config.jsonに"
                 "tenant_idが設定されていません。"
-            )
-
-        if not user_master_url:
-            raise ValueError(
-                "graph_config.jsonに"
-                "user_master_urlが設定されていません。"
-            )
-
-        if not user_master_url.startswith(
-            ("https://", "http://")
-        ):
-            raise ValueError(
-                "graph_config.jsonの"
-                "user_master_urlがURL形式ではありません。"
             )
 
         if (
@@ -161,5 +140,4 @@ class AppConfig:
                 f"{tenant_id}"
             ),
             "scopes": normalized_scopes,
-            "user_master_url": user_master_url,
         }

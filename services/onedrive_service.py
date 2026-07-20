@@ -7,7 +7,6 @@ from typing import Any
 
 import requests
 
-from services.app_config import AppConfig
 from services.graph_auth import GraphAuth
 from services.user_master_reader import (
     UserMasterReader,
@@ -27,12 +26,18 @@ class OneDriveService:
     def __init__(
         self,
         device_flow_callback=None,
+        user_master_url: str = "",
     ):
         self.auth = GraphAuth(
             device_flow_callback=(
                 device_flow_callback
             )
         )
+
+        # 利用者一覧URLは画面入力から受け取った値だけを使用する。
+        self.user_master_url = str(
+            user_master_url
+        ).strip()
 
     # =====================================
     # 共有URLからDriveItem情報を取得
@@ -228,8 +233,28 @@ class OneDriveService:
             ],
         ]
 
-        config = AppConfig.load_graph_config()
-        user_master_url = config["user_master_url"]
+        user_master_url = self.user_master_url
+
+        if not user_master_url:
+            raise ValueError(
+                "利用者一覧URLが入力されていません。\n\n"
+                "画面上部の共通入力欄にある"
+                "「利用者一覧URL」へ、"
+                "利用者一覧Excelの共有URLを"
+                "入力してください。"
+            )
+
+        if not user_master_url.startswith(
+            (
+                "https://",
+                "http://",
+            )
+        ):
+            raise ValueError(
+                "利用者一覧URLの形式が"
+                "正しくありません。\n\n"
+                f"{user_master_url}"
+            )
 
         temp_path = None
 

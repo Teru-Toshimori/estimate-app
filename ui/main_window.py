@@ -1,10 +1,9 @@
-import os
+from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -12,724 +11,605 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QTextEdit,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from models.estimate_data import EstimateData
-from services.excel_writer import ExcelWriter
-from services.pdf_reader import PDFReader
-from ui.device_login_dialog import DeviceLoginDialog
-from workers.ledger_update_worker import LedgerUpdateWorker
+from ui.tabs.msr_tab import MsrTab
+from ui.tabs.tg_tab import TgTab
+from ui.tabs.tokucho_other_tab import TokuchoOtherTab
+from ui.tabs.tokucho_tb_tab import TokuchoTbTab
 
 
 class MainWindow(QMainWindow):
+    """
+    見積書作成ツールのメイン画面。
 
-    # バックグラウンドスレッドから
-    # Microsoft認証ダイアログを表示するためのシグナル
-    device_login_requested = Signal(dict)
+    共通入力:
+        ・業務計画書フォルダ
+        ・出力フォルダ
+        ・管理台帳URL
+        ・利用者一覧URL
+
+    タブ:
+        ・特調TB
+        ・特調TB以外
+        ・TG
+        ・MSR
+    """
 
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("見積書作成ツール")
-        self.resize(900, 780)
+        self.setWindowTitle(
+            "見積書作成ツール"
+        )
 
-        # 台帳更新用スレッド
-        self.ledger_thread = None
-        self.ledger_worker = None
+        self.resize(
+            1200,
+            850,
+        )
 
         self.setup_ui()
 
-        # 認証要求をメインスレッドのダイアログ表示へ接続
-        self.device_login_requested.connect(
-            self.show_device_login
-        )
-
-    def setup_ui(self):
+    # =====================================
+    # 画面作成
+    # =====================================
+    def setup_ui(self) -> None:
 
         central_widget = QWidget()
-        self.setCentralWidget(central_widget)
 
-        main_layout = QVBoxLayout()
-        central_widget.setLayout(main_layout)
-
-        # =====================================
-        # 業務計画書PDF
-        # =====================================
-        pdf_label = QLabel("業務計画書（PDF）")
-
-        self.pdf_edit = QLineEdit()
-        self.pdf_edit.setPlaceholderText(
-            "業務計画書PDFを選択してください"
+        self.setCentralWidget(
+            central_widget
         )
 
-        self.pdf_button = QPushButton("参照")
+        main_layout = QVBoxLayout(
+            central_widget
+        )
 
-        pdf_layout = QHBoxLayout()
-        pdf_layout.addWidget(self.pdf_edit)
-        pdf_layout.addWidget(self.pdf_button)
+        main_layout.setContentsMargins(
+            16,
+            16,
+            16,
+            16,
+        )
+
+        main_layout.setSpacing(
+            10
+        )
 
         # =====================================
-        # OneDrive／SharePoint管理台帳URL
+        # タイトル
+        # =====================================
+        title_label = QLabel(
+            "見積書作成ツール"
+        )
+
+        title_label.setStyleSheet(
+            "font-size: 22px;"
+            "font-weight: bold;"
+        )
+
+        main_layout.addWidget(
+            title_label
+        )
+
+        # =====================================
+        # 共通入力タイトル
+        # =====================================
+        common_title_label = QLabel(
+            "共通入力"
+        )
+
+        common_title_label.setStyleSheet(
+            "font-size: 16px;"
+            "font-weight: bold;"
+            "margin-top: 4px;"
+        )
+
+        main_layout.addWidget(
+            common_title_label
+        )
+
+        # =====================================
+        # 共通入力エリア
+        # =====================================
+        common_input_layout = QHBoxLayout()
+
+        common_input_layout.setSpacing(
+            12
+        )
+
+        # =====================================
+        # フォルダ設定グループ
+        # =====================================
+        folder_group = QGroupBox(
+            "フォルダ設定"
+        )
+
+        folder_layout = QGridLayout(
+            folder_group
+        )
+
+        folder_layout.setContentsMargins(
+            12,
+            14,
+            12,
+            12,
+        )
+
+        folder_layout.setHorizontalSpacing(
+            8
+        )
+
+        folder_layout.setVerticalSpacing(
+            10
+        )
+
+        # =====================================
+        # 業務計画書フォルダ
+        # =====================================
+        pdf_folder_label = QLabel(
+            "業務計画書フォルダ"
+        )
+
+        self.pdf_folder_edit = QLineEdit()
+
+        self.pdf_folder_edit.setPlaceholderText(
+            "PDFが入っているフォルダを選択"
+        )
+
+        self.pdf_folder_button = QPushButton(
+            "参照"
+        )
+
+        self.pdf_folder_button.setFixedWidth(
+            80
+        )
+
+        folder_layout.addWidget(
+            pdf_folder_label,
+            0,
+            0,
+        )
+
+        folder_layout.addWidget(
+            self.pdf_folder_edit,
+            0,
+            1,
+        )
+
+        folder_layout.addWidget(
+            self.pdf_folder_button,
+            0,
+            2,
+        )
+
+        # =====================================
+        # 出力フォルダ
+        # =====================================
+        output_folder_label = QLabel(
+            "出力フォルダ"
+        )
+
+        self.output_folder_edit = QLineEdit()
+
+        self.output_folder_edit.setPlaceholderText(
+            "Excel・PDFの保存先を選択"
+        )
+
+        self.output_folder_button = QPushButton(
+            "参照"
+        )
+
+        self.output_folder_button.setFixedWidth(
+            80
+        )
+
+        folder_layout.addWidget(
+            output_folder_label,
+            1,
+            0,
+        )
+
+        folder_layout.addWidget(
+            self.output_folder_edit,
+            1,
+            1,
+        )
+
+        folder_layout.addWidget(
+            self.output_folder_button,
+            1,
+            2,
+        )
+
+        folder_layout.setColumnStretch(
+            1,
+            1,
+        )
+
+        # =====================================
+        # URL設定グループ
+        # =====================================
+        url_group = QGroupBox(
+            "OneDrive／SharePoint設定"
+        )
+
+        url_layout = QGridLayout(
+            url_group
+        )
+
+        url_layout.setContentsMargins(
+            12,
+            14,
+            12,
+            12,
+        )
+
+        url_layout.setHorizontalSpacing(
+            8
+        )
+
+        url_layout.setVerticalSpacing(
+            10
+        )
+
+        # =====================================
+        # 管理台帳URL
         # =====================================
         ledger_url_label = QLabel(
-            "管理台帳URL（OneDrive／SharePoint）"
+            "管理台帳URL"
         )
 
-        self.excel_edit = QLineEdit()
-        self.excel_edit.setPlaceholderText(
-            "https://会社名.sharepoint.com/..."
+        self.ledger_url_edit = QLineEdit()
+
+        self.ledger_url_edit.setPlaceholderText(
+            "管理台帳Excelの共有URLを入力"
         )
 
-        self.excel_button = QPushButton("貼り付け")
+        self.ledger_url_button = QPushButton(
+            "貼り付け"
+        )
 
-        ledger_url_layout = QHBoxLayout()
-        ledger_url_layout.addWidget(self.excel_edit)
-        ledger_url_layout.addWidget(self.excel_button)
+        self.ledger_url_button.setFixedWidth(
+            80
+        )
+
+        url_layout.addWidget(
+            ledger_url_label,
+            0,
+            0,
+        )
+
+        url_layout.addWidget(
+            self.ledger_url_edit,
+            0,
+            1,
+        )
+
+        url_layout.addWidget(
+            self.ledger_url_button,
+            0,
+            2,
+        )
 
         # =====================================
-        # 操作ボタン
+        # 利用者一覧URL
         # =====================================
-        self.pdf_parse_button = QPushButton("PDF解析")
-        self.ledger_write_button = QPushButton("台帳記入")
-        self.output_button = QPushButton("Excel・PDF出力")
-
-        operation_layout = QHBoxLayout()
-        operation_layout.addWidget(self.pdf_parse_button)
-        operation_layout.addWidget(self.ledger_write_button)
-
-        # =====================================
-        # 抽出結果
-        # =====================================
-        result_group = QGroupBox("抽出結果")
-        result_form = QFormLayout()
-
-        self.application_edit = QLineEdit()
-        self.voucher_edit = QLineEdit()
-        self.estimate_edit = QLineEdit()
-        self.issue_edit = QLineEdit()
-        self.department_edit = QLineEdit()
-        self.subject_edit = QLineEdit()
-        self.model_code_edit = QLineEdit()
-        self.amount_edit = QLineEdit()
-        self.delivery_edit = QLineEdit()
-        self.outputs_edit = QTextEdit()
-
-        self.outputs_edit.setMinimumHeight(130)
-
-        result_form.addRow(
-            "申請書No",
-            self.application_edit
+        user_master_url_label = QLabel(
+            "利用者一覧URL"
         )
 
-        result_form.addRow(
-            "伝票番号",
-            self.voucher_edit
+        self.user_master_url_edit = QLineEdit()
+
+        self.user_master_url_edit.setPlaceholderText(
+            "利用者一覧Excelの共有URLを入力"
         )
 
-        result_form.addRow(
-            "見積番号",
-            self.estimate_edit
+        self.user_master_url_button = QPushButton(
+            "貼り付け"
         )
 
-        result_form.addRow(
-            "発行日",
-            self.issue_edit
+        self.user_master_url_button.setFixedWidth(
+            80
         )
 
-        result_form.addRow(
-            "依頼部署",
-            self.department_edit
+        url_layout.addWidget(
+            user_master_url_label,
+            1,
+            0,
         )
 
-        result_form.addRow(
-            "件名",
-            self.subject_edit
+        url_layout.addWidget(
+            self.user_master_url_edit,
+            1,
+            1,
         )
 
-        result_form.addRow(
-            "車種コード",
-            self.model_code_edit
+        url_layout.addWidget(
+            self.user_master_url_button,
+            1,
+            2,
         )
 
-        result_form.addRow(
-            "委託金額",
-            self.amount_edit
+        url_layout.setColumnStretch(
+            1,
+            1,
         )
-
-        result_form.addRow(
-            "納期",
-            self.delivery_edit
-        )
-
-        result_form.addRow(
-            "成果物名称",
-            self.outputs_edit
-        )
-
-        result_group.setLayout(result_form)
 
         # =====================================
-        # メインレイアウト
+        # グループを横並びに配置
         # =====================================
-        main_layout.addWidget(pdf_label)
-        main_layout.addLayout(pdf_layout)
+        common_input_layout.addWidget(
+            folder_group,
+            stretch=1,
+        )
 
-        main_layout.addWidget(ledger_url_label)
-        main_layout.addLayout(ledger_url_layout)
+        common_input_layout.addWidget(
+            url_group,
+            stretch=1,
+        )
 
-        main_layout.addLayout(operation_layout)
-
-        main_layout.addWidget(result_group)
-
-        main_layout.addWidget(self.output_button)
+        main_layout.addLayout(
+            common_input_layout
+        )
 
         # =====================================
-        # ボタンイベント
+        # タブ
         # =====================================
-        self.pdf_button.clicked.connect(
-            self.select_pdf
+        self.tab_widget = QTabWidget()
+
+        self.tokucho_tb_tab = TokuchoTbTab(
+            input_provider=self.get_common_inputs
         )
 
-        self.excel_button.clicked.connect(
-            self.paste_excel_url
+        self.tokucho_other_tab = TokuchoOtherTab(
+            input_provider=self.get_common_inputs
         )
 
-        self.pdf_parse_button.clicked.connect(
-            self.parse_pdf
+        self.tg_tab = TgTab(
+            input_provider=self.get_common_inputs
         )
 
-        self.ledger_write_button.clicked.connect(
-            self.write_ledger
+        self.msr_tab = MsrTab(
+            input_provider=self.get_common_inputs
         )
 
-        self.output_button.clicked.connect(
-            self.export_excel
+        self.tab_widget.addTab(
+            self.tokucho_tb_tab,
+            "特調TB",
+        )
+
+        self.tab_widget.addTab(
+            self.tokucho_other_tab,
+            "特調TB以外",
+        )
+
+        self.tab_widget.addTab(
+            self.tg_tab,
+            "TG",
+        )
+
+        self.tab_widget.addTab(
+            self.msr_tab,
+            "MSR",
+        )
+
+        main_layout.addWidget(
+            self.tab_widget,
+            stretch=1,
+        )
+
+        # =====================================
+        # イベント接続
+        # =====================================
+        self.pdf_folder_button.clicked.connect(
+            self.select_pdf_folder
+        )
+
+        self.output_folder_button.clicked.connect(
+            self.select_output_folder
+        )
+
+        self.ledger_url_button.clicked.connect(
+            self.paste_ledger_url
+        )
+
+        self.user_master_url_button.clicked.connect(
+            self.paste_user_master_url
         )
 
     # =====================================
-    # PDF選択
+    # 共通入力取得
     # =====================================
-    def select_pdf(self):
+    def get_common_inputs(self) -> dict:
+        """
+        各タブへ共通入力値を返す。
+        """
 
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "業務計画書を選択",
-            "",
-            "PDFファイル (*.pdf)"
+        return {
+            "pdf_folder": (
+                self.pdf_folder_edit
+                .text()
+                .strip()
+            ),
+            "share_url": (
+                self.ledger_url_edit
+                .text()
+                .strip()
+            ),
+            "user_master_url": (
+                self.user_master_url_edit
+                .text()
+                .strip()
+            ),
+            "output_folder": (
+                self.output_folder_edit
+                .text()
+                .strip()
+            ),
+        }
+
+    # =====================================
+    # 業務計画書フォルダ選択
+    # =====================================
+    def select_pdf_folder(self) -> None:
+
+        current_path = (
+            self.pdf_folder_edit
+            .text()
+            .strip()
         )
 
-        if file_path:
-            self.pdf_edit.setText(file_path)
+        if not Path(
+            current_path
+        ).is_dir():
+            current_path = ""
+
+        selected_folder = (
+            QFileDialog.getExistingDirectory(
+                self,
+                "業務計画書フォルダを選択",
+                current_path,
+            )
+        )
+
+        if selected_folder:
+            self.pdf_folder_edit.setText(
+                selected_folder
+            )
 
     # =====================================
-    # クリップボードから管理台帳URLを貼り付け
+    # 出力フォルダ選択
     # =====================================
-    def paste_excel_url(self):
+    def select_output_folder(self) -> None:
 
-        clipboard = QApplication.clipboard()
-        url = clipboard.text().strip()
+        current_path = (
+            self.output_folder_edit
+            .text()
+            .strip()
+        )
+
+        if not Path(
+            current_path
+        ).is_dir():
+            current_path = ""
+
+        selected_folder = (
+            QFileDialog.getExistingDirectory(
+                self,
+                "出力フォルダを選択",
+                current_path,
+            )
+        )
+
+        if selected_folder:
+            self.output_folder_edit.setText(
+                selected_folder
+            )
+
+    # =====================================
+    # 管理台帳URL貼り付け
+    # =====================================
+    def paste_ledger_url(self) -> None:
+
+        self.paste_url_to_edit(
+            target_edit=self.ledger_url_edit,
+            field_name="管理台帳URL",
+        )
+
+    # =====================================
+    # 利用者一覧URL貼り付け
+    # =====================================
+    def paste_user_master_url(self) -> None:
+
+        self.paste_url_to_edit(
+            target_edit=self.user_master_url_edit,
+            field_name="利用者一覧URL",
+        )
+
+    # =====================================
+    # URL共通貼り付け処理
+    # =====================================
+    def paste_url_to_edit(
+        self,
+        target_edit: QLineEdit,
+        field_name: str,
+    ) -> None:
+
+        clipboard = (
+            QApplication.clipboard()
+        )
+
+        url = (
+            clipboard.text()
+            .strip()
+        )
 
         if not url:
             QMessageBox.warning(
                 self,
                 "確認",
-                "クリップボードにURLがありません。"
+                "クリップボードに"
+                "URLがありません。",
             )
             return
 
         if not url.startswith(
-            ("https://", "http://")
-        ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "クリップボードの内容がURLではありません。"
-            )
-            return
-
-        self.excel_edit.setText(url)
-
-    # =====================================
-    # PDF解析
-    # =====================================
-    def parse_pdf(self):
-
-        pdf_path = self.pdf_edit.text().strip()
-
-        if not pdf_path:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "業務計画書（PDF）を選択してください。"
-            )
-            return
-
-        if not os.path.exists(pdf_path):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "指定されたPDFファイルが見つかりません。\n\n"
-                f"{pdf_path}"
-            )
-            return
-
-        try:
-            reader = PDFReader()
-            data = reader.parse(pdf_path)
-
-            # PDFファイル名を拡張子なしで取得し、
-            # 伝票番号として使用する
-            voucher_no = os.path.splitext(
-                os.path.basename(pdf_path)
-            )[0]
-
-            data.voucher_no = voucher_no
-
-            self.application_edit.setText(
-                data.application_no
-            )
-
-            self.voucher_edit.setText(
-                data.voucher_no
-            )
-
-            self.department_edit.setText(
-                data.department
-            )
-
-            self.subject_edit.setText(
-                data.subject
-            )
-
-            self.model_code_edit.setText(
-                data.model_code
-            )
-
-            self.amount_edit.setText(
-                data.amount
-            )
-
-            self.delivery_edit.setText(
-                data.due_date
-            )
-
-            self.outputs_edit.setPlainText(
-                "\n".join(data.outputs)
-            )
-
-            # 新しいPDFを解析したため、
-            # 前回の台帳記入結果を消す
-            self.estimate_edit.clear()
-            self.issue_edit.clear()
-
-            self.statusBar().showMessage(
-                "PDF解析が完了しました。",
-                5000,
-            )
-
-            QMessageBox.information(
-                self,
-                "完了",
-                "PDF解析が完了しました。"
-            )
-
-        except Exception as error:
-            QMessageBox.critical(
-                self,
-                "エラー",
-                "PDF解析に失敗しました。\n\n"
-                f"{error}"
-            )
-
-    # =====================================
-    # OneDrive／SharePoint管理台帳へ記入
-    # =====================================
-    def write_ledger(self):
-
-        share_url = self.excel_edit.text().strip()
-
-        if not share_url:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "管理台帳のOneDrive／SharePoint URLを"
-                "入力してください。"
-            )
-            return
-
-        if not share_url.startswith(
-            ("https://", "http://")
-        ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "管理台帳URLの形式が正しくありません。"
-            )
-            return
-
-        if not self.application_edit.text().strip():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "先にPDF解析を実行してください。"
-            )
-            return
-
-        if not self.department_edit.text().strip():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "依頼部署が入力されていません。"
-            )
-            return
-
-        # 二重実行防止
-        if (
-            self.ledger_thread is not None
-            and self.ledger_thread.isRunning()
-        ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "現在、台帳記入処理を実行中です。"
-            )
-            return
-
-        confirm = QMessageBox.question(
-            self,
-            "台帳記入の確認",
-            "OneDrive／SharePoint上の管理台帳へ"
-            "新しい行を追加します。\n\n"
-            "実行してよろしいですか？",
             (
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No
-            ),
-            QMessageBox.StandardButton.No,
-        )
-
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-
-        try:
-            data = self.create_estimate_data()
-
-            self.start_ledger_update(
-                share_url=share_url,
-                data=data,
+                "https://",
+                "http://",
             )
-
-        except Exception as error:
-            QMessageBox.critical(
-                self,
-                "エラー",
-                "台帳記入処理を開始できませんでした。\n\n"
-                f"{error}"
-            )
-
-    # =====================================
-    # 台帳更新バックグラウンド処理開始
-    # =====================================
-    def start_ledger_update(
-        self,
-        share_url: str,
-        data: EstimateData,
-    ):
-
-        self.ledger_write_button.setEnabled(False)
-        self.ledger_write_button.setText("台帳記入中...")
-
-        self.statusBar().showMessage(
-            "管理台帳の更新を開始しています..."
-        )
-
-        self.ledger_thread = QThread(self)
-
-        self.ledger_worker = LedgerUpdateWorker(
-            share_url=share_url,
-            data=data,
-            device_flow_callback=(
-                self.request_device_login
-            ),
-        )
-
-        self.ledger_worker.moveToThread(
-            self.ledger_thread
-        )
-
-        # スレッド開始時にワーカーを実行
-        self.ledger_thread.started.connect(
-            self.ledger_worker.run
-        )
-
-        # 進捗表示
-        self.ledger_worker.progress.connect(
-            self.statusBar().showMessage
-        )
-
-        # 成功時
-        self.ledger_worker.finished.connect(
-            self.on_ledger_update_finished
-        )
-
-        # 失敗時
-        self.ledger_worker.failed.connect(
-            self.on_ledger_update_failed
-        )
-
-        # 成功・失敗のどちらでもスレッド終了
-        self.ledger_worker.finished.connect(
-            self.ledger_thread.quit
-        )
-
-        self.ledger_worker.failed.connect(
-            self.ledger_thread.quit
-        )
-
-        # オブジェクト解放
-        self.ledger_thread.finished.connect(
-            self.ledger_worker.deleteLater
-        )
-
-        self.ledger_thread.finished.connect(
-            self.clear_ledger_thread
-        )
-
-        self.ledger_thread.start()
-
-    # =====================================
-    # バックグラウンドスレッドから
-    # 認証ダイアログ表示を要求
-    # =====================================
-    def request_device_login(self, flow: dict):
-
-        self.device_login_requested.emit(flow)
-
-    # =====================================
-    # Microsoft認証ダイアログ表示
-    # =====================================
-    def show_device_login(self, flow: dict):
-
-        dialog = DeviceLoginDialog(
-            flow=flow,
-            parent=self,
-        )
-
-        dialog.exec()
-
-    # =====================================
-    # 台帳更新成功
-    # =====================================
-    def on_ledger_update_finished(
-        self,
-        result: dict,
-    ):
-
-        self.estimate_edit.setText(
-            result["estimate_no"]
-        )
-
-        self.issue_edit.setText(
-            result["issue_date"]
-        )
-
-        self.statusBar().showMessage(
-            "管理台帳の更新が完了しました。",
-            5000,
-        )
-
-        QMessageBox.information(
-            self,
-            "完了",
-            "OneDrive／SharePoint上の管理台帳へ"
-            "記入しました。\n\n"
-            f"ファイル："
-            f"{result.get('remote_name', '')}\n"
-            f"シート：{result['sheet_name']}\n"
-            f"行：{result['row']}\n"
-            f"見積番号：{result['estimate_no']}\n"
-            f"発行日：{result['issue_date']}"
-        )
-
-    # =====================================
-    # 台帳更新失敗
-    # =====================================
-    def on_ledger_update_failed(
-        self,
-        error_message: str,
-    ):
-
-        self.statusBar().showMessage(
-            "管理台帳の更新に失敗しました。",
-            5000,
-        )
-
-        QMessageBox.critical(
-            self,
-            "エラー",
-            "OneDrive／SharePointの台帳記入に"
-            "失敗しました。\n\n"
-            f"{error_message}"
-        )
-
-    # =====================================
-    # 台帳更新スレッド終了処理
-    # =====================================
-    def clear_ledger_thread(self):
-
-        self.ledger_write_button.setEnabled(True)
-        self.ledger_write_button.setText("台帳記入")
-
-        thread = self.ledger_thread
-
-        self.ledger_worker = None
-        self.ledger_thread = None
-
-        if thread is not None:
-            thread.deleteLater()
-
-    # =====================================
-    # 見積書Excel・PDF出力
-    # =====================================
-    def export_excel(self):
-
-        if not self.application_edit.text().strip():
+        ):
             QMessageBox.warning(
                 self,
                 "確認",
-                "先にPDF解析を実行してください。"
+                "クリップボードの内容が"
+                f"{field_name}として使用できる"
+                "URLではありません。",
             )
             return
 
-        if not self.estimate_edit.text().strip():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "先に台帳記入を実行してください。"
-            )
-            return
-
-        save_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "見積書を保存",
-            "sample.xlsx",
-            "Excelファイル (*.xlsx)"
+        target_edit.setText(
+            url
         )
 
-        if not save_path:
-            return
-
-        if not save_path.lower().endswith(".xlsx"):
-            save_path += ".xlsx"
-
-        self.output_button.setEnabled(False)
-        self.output_button.setText("出力中...")
-
-        QApplication.processEvents()
-
-        try:
-            data = self.create_estimate_data()
-
-            writer = ExcelWriter()
-
-            writer.write(
-                "resources/TB_見積書フォーマット.xlsx",
-                save_path,
-                data
-            )
-
-            pdf_path = os.path.splitext(
-                save_path
-            )[0] + ".pdf"
-
-            QMessageBox.information(
-                self,
-                "完了",
-                "Excel出力とPDF出力が完了しました。\n\n"
-                f"Excel：{save_path}\n"
-                f"PDF：{pdf_path}"
-            )
-
-        except Exception as error:
-            QMessageBox.critical(
-                self,
-                "エラー",
-                "Excel・PDF出力に失敗しました。\n\n"
-                f"{error}"
-            )
-
-        finally:
-            self.output_button.setEnabled(True)
-            self.output_button.setText(
-                "Excel・PDF出力"
-            )
-
     # =====================================
-    # 画面入力値からEstimateDataを作成
+    # アプリ終了処理
     # =====================================
-    def create_estimate_data(self) -> EstimateData:
+    def closeEvent(
+        self,
+        event,
+    ) -> None:
 
-        outputs = [
-            line.strip()
-            for line in (
-                self.outputs_edit
-                .toPlainText()
-                .splitlines()
-            )
-            if line.strip()
+        tabs = [
+            self.tokucho_tb_tab,
+            self.tokucho_other_tab,
+            self.tg_tab,
+            self.msr_tab,
         ]
 
-        return EstimateData(
-            application_no=(
-                self.application_edit.text().strip()
-            ),
-            voucher_no=(
-                self.voucher_edit.text().strip()
-            ),
-            estimate_no=(
-                self.estimate_edit.text().strip()
-            ),
-            issue_date=(
-                self.issue_edit.text().strip()
-            ),
-            department=(
-                self.department_edit.text().strip()
-            ),
-            subject=(
-                self.subject_edit.text().strip()
-            ),
-            model_code=(
-                self.model_code_edit.text().strip()
-            ),
-            amount=(
-                self.amount_edit.text().strip()
-            ),
-            due_date=(
-                self.delivery_edit.text().strip()
-            ),
-            outputs=outputs,
-        )
-
-    # =====================================
-    # アプリ終了時
-    # =====================================
-    def closeEvent(self, event):
-
-        if (
-            self.ledger_thread is not None
-            and self.ledger_thread.isRunning()
-        ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "台帳記入処理を実行中のため、"
-                "アプリを終了できません。"
+        for tab in tabs:
+            can_close_method = getattr(
+                tab,
+                "can_close",
+                None,
             )
 
-            event.ignore()
-            return
+            if (
+                callable(can_close_method)
+                and not can_close_method()
+            ):
+                QMessageBox.warning(
+                    self,
+                    "処理中",
+                    "現在処理を実行中のため、"
+                    "アプリを終了できません。",
+                )
+
+                event.ignore()
+                return
 
         event.accept()
