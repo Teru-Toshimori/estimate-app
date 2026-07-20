@@ -422,7 +422,7 @@ class LedgerWriter:
             # J列：日付のみ表示
             sheet[
                 f"J{new_row}"
-            ].number_format = "yyyy/mm/dd"
+            ].number_format = "'yy/m/d"
 
             # =====================================
             # B列幅を内容に合わせて調整

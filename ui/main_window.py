@@ -150,14 +150,14 @@ class MainWindow(QMainWindow):
         # =====================================
         # 業務計画書フォルダ
         # =====================================
-        pdf_folder_label = QLabel(
+        self.input_folder_label = QLabel(
             "業務計画書フォルダ"
         )
 
         self.pdf_folder_edit = QLineEdit()
 
         self.pdf_folder_edit.setPlaceholderText(
-            "PDFが入っているフォルダを選択"
+            "Excel・PDFが入っているフォルダを選択"
         )
 
         self.pdf_folder_button = QPushButton(
@@ -169,7 +169,7 @@ class MainWindow(QMainWindow):
         )
 
         folder_layout.addWidget(
-            pdf_folder_label,
+            self.input_folder_label,
             0,
             0,
         )
@@ -421,20 +421,94 @@ class MainWindow(QMainWindow):
             self.paste_user_master_url
         )
 
+        self.tab_widget.currentChanged.connect(
+            self.update_input_folder_ui
+        )
+
+        # 初期表示
+        self.update_input_folder_ui(
+            self.tab_widget.currentIndex()
+        )
+
+    # =====================================
+    # 入力フォルダ表示切り替え
+    # =====================================
+    def update_input_folder_ui(
+        self,
+        index: int,
+    ) -> None:
+        """
+        選択中のタブに応じて、
+        共通入力フォルダの表示名を変更する。
+
+        入力欄そのものは全タブで共通利用する。
+        """
+
+        tab_name = self.tab_widget.tabText(
+            index
+        )
+
+        if tab_name == "MSR":
+            label_text = (
+                "見積書発行依頼フォルダ"
+            )
+
+            placeholder_text = (
+                "見積書発行依頼Excelが"
+                "入っているフォルダを選択"
+            )
+
+        elif tab_name == "TG":
+            label_text = (
+                "入力フォルダ"
+            )
+
+            placeholder_text = (
+                "TGの入力ファイルが"
+                "入っているフォルダを選択"
+            )
+
+        else:
+            label_text = (
+                "業務計画書フォルダ"
+            )
+
+            placeholder_text = (
+                "業務計画書PDFが"
+                "入っているフォルダを選択"
+            )
+
+        self.input_folder_label.setText(
+            label_text
+        )
+
+        self.pdf_folder_edit.setPlaceholderText(
+            placeholder_text
+        )
+
     # =====================================
     # 共通入力取得
     # =====================================
-    def get_common_inputs(self) -> dict:
+    def get_common_inputs(
+        self,
+    ) -> dict:
         """
         各タブへ共通入力値を返す。
         """
 
+        input_folder = (
+            self.pdf_folder_edit
+            .text()
+            .strip()
+        )
+
         return {
-            "pdf_folder": (
-                self.pdf_folder_edit
-                .text()
-                .strip()
-            ),
+            # 新しい共通名
+            "input_folder": input_folder,
+
+            # 既存タブとの互換用
+            "pdf_folder": input_folder,
+
             "share_url": (
                 self.ledger_url_edit
                 .text()
@@ -453,9 +527,11 @@ class MainWindow(QMainWindow):
         }
 
     # =====================================
-    # 業務計画書フォルダ選択
+    # 入力フォルダ選択
     # =====================================
-    def select_pdf_folder(self) -> None:
+    def select_pdf_folder(
+        self,
+    ) -> None:
 
         current_path = (
             self.pdf_folder_edit
@@ -468,10 +544,16 @@ class MainWindow(QMainWindow):
         ).is_dir():
             current_path = ""
 
+        folder_name = (
+            self.input_folder_label
+            .text()
+            .strip()
+        )
+
         selected_folder = (
             QFileDialog.getExistingDirectory(
                 self,
-                "業務計画書フォルダを選択",
+                f"{folder_name}を選択",
                 current_path,
             )
         )
