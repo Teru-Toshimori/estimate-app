@@ -9,6 +9,7 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 
+# .envファイル読込
 load_dotenv()
 
 
@@ -17,29 +18,40 @@ class TgOpenAIFormatter:
     """
     TG帳票 OpenAI整形処理
 
-    OCR抽出後の値を
-    Excel登録用JSONへ整形する
+    OCRで抽出した値を
+    Excelへ登録しやすい形式へ整形する。
 
+    処理の流れ
+
+        OCR結果受取
+            ↓
+        OpenAIへ送信
+            ↓
+        JSON形式へ変換
+            ↓
+        呼び出し元へ返却
     """
 
     def __init__(self):
 
+        # ---------------------------------
+        # APIキー取得
+        # ---------------------------------
         api_key = os.getenv(
             "OPENAI_API_KEY"
         )
 
-
+        # APIキー未設定チェック
         if not api_key:
 
             raise RuntimeError(
                 "OPENAI_API_KEY が設定されていません"
             )
 
-
+        # OpenAIクライアント生成
         self.client = OpenAI(
             api_key=api_key
         )
-
 
 
     def format(
@@ -47,22 +59,28 @@ class TgOpenAIFormatter:
         data: dict
     ) -> dict:
         """
-        抽出済みデータを整形
+        OCR抽出済みデータを
+        OpenAIで整形する
 
-        Args:
-            data:
-                {
-                    subject:"",
-                    amount:"",
-                    delivery_date:"",
-                    department:""
-                }
+        Args
+        ----
+        data
 
-        Returns:
-            JSON dict
+            {
+                subject:"",
+                amount:"",
+                delivery_date:"",
+                department:""
+            }
+
+        Returns
+        -------
+        dict
         """
 
-
+        # ---------------------------------
+        # OpenAIへ渡すプロンプト作成
+        # ---------------------------------
         prompt = f"""
 あなたは帳票データ整形処理です。
 
@@ -73,7 +91,6 @@ class TgOpenAIFormatter:
     data,
     ensure_ascii=False
 )}
-
 
 ルール:
 
@@ -92,9 +109,11 @@ class TgOpenAIFormatter:
 }}
 """
 
-
         try:
 
+            # ---------------------------------
+            # OpenAIへ送信
+            # ---------------------------------
             response = self.client.responses.create(
 
                 model="gpt-4.1-mini",
@@ -102,14 +121,14 @@ class TgOpenAIFormatter:
                 input=[
 
                     {
-                        "role":"user",
+                        "role": "user",
 
-                        "content":[
+                        "content": [
 
                             {
-                                "type":"input_text",
+                                "type": "input_text",
 
-                                "text":prompt
+                                "text": prompt
                             }
 
                         ]
@@ -119,20 +138,22 @@ class TgOpenAIFormatter:
 
             )
 
-
+            # ---------------------------------
+            # OpenAI回答取得
+            # ---------------------------------
             text = response.output_text
-
 
             logger.info(
                 "OpenAI整形結果=%s",
                 text
             )
 
-
+            # ---------------------------------
+            # JSONへ変換して返却
+            # ---------------------------------
             return json.loads(
                 text
             )
-
 
         except Exception:
 
@@ -140,6 +161,8 @@ class TgOpenAIFormatter:
                 "OpenAI整形失敗"
             )
 
-
-            # 失敗時は元データ返却
+            # ---------------------------------
+            # OpenAI失敗時は
+            # 元データをそのまま返却
+            # ---------------------------------
             return data

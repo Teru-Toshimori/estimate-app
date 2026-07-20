@@ -7,6 +7,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 
+# .envファイル読込
 load_dotenv()
 
 
@@ -17,18 +18,19 @@ logger = logging.getLogger(__name__)
 # OpenAI設定
 # =====================================
 
+# APIキー取得
 OPENAI_API_KEY = os.getenv(
     "OPENAI_API_KEY"
 )
 
-
+# APIキー未設定チェック
 if not OPENAI_API_KEY:
 
     raise RuntimeError(
         "OPENAI_API_KEY が設定されていません"
     )
 
-
+# OpenAIクライアント生成
 client = OpenAI(
     api_key=OPENAI_API_KEY
 )
@@ -43,16 +45,25 @@ def encode_image(
     image_path: str
 ):
     """
-    画像をBase64へ変換
+    画像をBase64文字列へ変換する。
+
+    OpenAI Vision APIへ画像を渡すため、
+    PNGファイルをBase64へ変換する。
     """
 
+    # ---------------------------------
+    # ファイル存在確認
+    # ---------------------------------
     if not os.path.exists(image_path):
 
         raise FileNotFoundError(
             image_path
         )
 
-
+    # ---------------------------------
+    # 画像読込
+    # Base64へ変換
+    # ---------------------------------
     with open(
         image_path,
         "rb"
@@ -74,16 +85,26 @@ def parse_json_response(
     content: str
 ):
     """
-    OpenAI回答JSON解析
+    OpenAIから返却されたJSONを解析する。
+
+    Returns
+    -------
+    {
+        "品名":"",
+        "金額":""
+    }
     """
 
     try:
 
+        # ---------------------------------
+        # JSON文字列→dict変換
+        # ---------------------------------
         data = json.loads(
             content
         )
 
-
+        # 必要項目だけ返却
         return {
 
             "品名":
@@ -99,20 +120,18 @@ def parse_json_response(
                 )
         }
 
-
     except Exception:
-
 
         logger.exception(
             "JSON解析失敗 : %s",
             content
         )
 
-
+        # JSON解析失敗時は空データ返却
         return {
 
-            "品名":"",
-            "金額":""
+            "品名": "",
+            "金額": ""
 
         }
 
@@ -126,35 +145,42 @@ def extract_tg_data(
     image_path: str
 ):
     """
-    TG仕様書画像から必要項目抽出
+    TG仕様書画像から必要項目を抽出する。
 
-    抽出:
-        品名（件名）
-        予測金額
+    抽出項目
 
+        ・品名（件名）
+        ・予測金額
+
+    処理の流れ
+
+        PNG画像
+            ↓
+        Base64変換
+            ↓
+        OpenAI Vision送信
+            ↓
+        JSON取得
+            ↓
+        dict返却
     """
 
     logger.info(
         "OpenAI Vision解析開始"
     )
 
-
     try:
 
-
         # -----------------------------
-        # 画像取得
+        # 画像をBase64へ変換
         # -----------------------------
-
         image_base64 = encode_image(
             image_path
         )
 
-
         # -----------------------------
-        # Prompt
+        # OpenAIへ送信するプロンプト
         # -----------------------------
-
         prompt = """
 
 帳票画像から以下2項目だけ抽出してください。
@@ -194,23 +220,21 @@ def extract_tg_data(
 
 """
 
-
         # -----------------------------
-        # OpenAI API
+        # OpenAI Vision API実行
         # -----------------------------
-
         response = client.chat.completions.create(
 
+            # Vision対応モデル
             model="gpt-4.1-mini",
 
-
+            # JSON形式で返却
             response_format={
 
                 "type":
                 "json_object"
 
             },
-
 
             messages=[
 
@@ -219,10 +243,9 @@ def extract_tg_data(
                     "role":
                     "user",
 
-
                     "content":[
 
-
+                        # 指示文
                         {
 
                             "type":
@@ -233,12 +256,11 @@ def extract_tg_data(
 
                         },
 
-
+                        # 画像
                         {
 
                             "type":
                             "image_url",
-
 
                             "image_url":{
 
@@ -255,13 +277,14 @@ def extract_tg_data(
 
             ],
 
-
+            # 毎回同じ結果になるよう固定
             temperature=0
 
         )
 
-
-
+        # ---------------------------------
+        # OpenAI回答取得
+        # ---------------------------------
         content = (
             response
             .choices[0]
@@ -269,44 +292,36 @@ def extract_tg_data(
             .content
         )
 
-
         logger.info(
             "OpenAI返却 : %s",
             content
         )
 
-
-
-        # -----------------------------
-        # JSON変換
-        # -----------------------------
-
+        # ---------------------------------
+        # JSON解析
+        # ---------------------------------
         result = parse_json_response(
             content
         )
-
 
         logger.info(
             "抽出結果 : %s",
             result
         )
 
-
+        # OCR結果返却
         return result
 
-
-
     except Exception:
-
 
         logger.exception(
             "OpenAI Vision解析失敗"
         )
 
-
+        # エラー時は空データ返却
         return {
 
-            "品名":"",
-            "金額":""
+            "品名": "",
+            "金額": ""
 
         }

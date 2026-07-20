@@ -2,171 +2,251 @@ import os
 import shutil
 import logging
 from datetime import datetime
-import win32com.client
 
 import openpyxl
-
-from models.tg_estimate_data import TgEstimateData
-
+import win32com.client
 
 logger = logging.getLogger(__name__)
 
 
 class TgExcelWriter:
     """
-    TG見積書Excel出力
+    TG見積書 Excel出力クラス
 
-    処理
-        テンプレートコピー
+    処理の流れ
+
+        元Excelをコピー
             ↓
-        必要セルへ値設定
+        VBAを保持したまま開く
+            ↓
+        OCR結果・固定値を書き込む
             ↓
         保存
+            ↓
+        PDFへ変換
     """
-
-    TEMPLATE_PATH = "resources/TG_見積書フォーマット.xlsm"
 
     def write(
         self,
-        template_path: str,
-        output_path: str,
-        data: TgEstimateData,
-    ) -> None:
+        input_excel_path: str,
+        output_excel_path: str,
+        data: dict,
+        estimate_no,
+    ):
         """
         Excel出力
 
-        Args:
-            template_path:
-                Excelテンプレート
+        Parameters
+        ----------
+        input_excel_path
+            入力フォルダにある元Excel
 
-            output_path:
-                保存先
+        output_excel_path
+            出力先
 
-            data:
-                OCR結果
+        data
+            OCR結果
+
+        estimate_no
+            台帳で採番した見積番号
         """
 
-        logger.info("Excel出力開始")
+        logger.info("========== Excel出力開始 ==========")
 
-        # -----------------------------
-        # テンプレート存在確認
-        # -----------------------------
-        if not os.path.exists(template_path):
-            raise FileNotFoundError(
-                f"テンプレートがありません。\n{template_path}"
-            )
+        # -------------------------------------------------
+        # 元となるExcelファイルが存在するか確認
+        # -------------------------------------------------
+        if not os.path.exists(input_excel_path):
+            raise FileNotFoundError(input_excel_path)
 
-        # -----------------------------
-        # テンプレートコピー
-        # -----------------------------
+        # -------------------------------------------------
+        # 元Excelを出力先へコピー
+        # （元ファイルは変更しない）
+        # -------------------------------------------------
         shutil.copy2(
-            template_path,
-            output_path,
+            input_excel_path,
+            output_excel_path
         )
 
         logger.info(
-            "テンプレートコピー完了 : %s",
-            output_path
+            "Excelコピー : %s",
+            output_excel_path
         )
 
-        # -----------------------------
-        # VBA保持で開く
-        # -----------------------------
-        workbook = openpyxl.load_workbook(
-            output_path,
-            keep_vba=True,
+        # -------------------------------------------------
+        # VBA(マクロ)を保持したままExcelを開く
+        # keep_vba=True が重要
+        # -------------------------------------------------
+        wb = openpyxl.load_workbook(
+            output_excel_path,
+            keep_vba=True
         )
 
-        sheet = workbook.active
+        # 先頭シート取得
+        ws = wb.active
 
-        # ===================================
-        # 固定値
-        # ===================================
+        # ---------------------------------
+        # G1
+        # 台帳で採番した見積番号
+        # ---------------------------------
 
-        sheet["G1"] = "14101201"
+        ws["G1"] = estimate_no
 
-        sheet["B6"] = "QY6247"
-        sheet["F6"] = "QY6247"
+        logger.info(
+            "G1(見積番号) : %s",
+            estimate_no
+        )
 
-        sheet["B8"] = 60
-        sheet["F8"] = 1
-
-        sheet["F4"] = "エイム株式会社"
-        sheet["F5"] = "齊藤　政輝"
-
-        sheet["E17"] = 1
-
-        # ===================================
+        # ---------------------------------
+        # G2
         # 今日の日付
-        # ===================================
+        # ---------------------------------
 
-        sheet["G2"] = datetime.now().strftime(
+        ws["G2"] = datetime.today().strftime(
             "%Y年%m月%d日"
         )
 
-        # ===================================
-        # OCR結果
-        # ===================================
+        # ---------------------------------
+        # B6
+        # 元ExcelのF6をコピー
+        # （F6は変更しない）
+        # ---------------------------------
 
-        if data.subject:
-            sheet["B4"] = data.subject
-            sheet["B17"] = data.subject
+        ws["B6"] = ws["F6"].value
 
-        if data.amount:
-            amount = int(
-                str(data.amount).replace(",", "")
+        # ---------------------------------
+        # 固定値入力
+        # ---------------------------------
+
+        # 工数
+        ws["B8"] = 60
+
+        # 数量
+        ws["F8"] = 1
+
+        # 発注元会社名
+        ws["F4"] = "エイム株式会社"
+
+        # 担当者
+        ws["F5"] = "齊藤　政輝"
+
+        # 明細No
+        ws["E17"] = 1
+
+        # ---------------------------------
+        # OCR結果取得
+        # ---------------------------------
+
+        subject = data.get(
+            "品名",
+            ""
+        )
+
+        amount = data.get(
+            "金額",
+            ""
+        )
+
+        # ---------------------------------
+        # 品名入力
+        # ---------------------------------
+
+        if subject:
+
+            # 件名
+            ws["B4"] = subject
+
+            # 明細名
+            ws["B17"] = subject
+
+            logger.info(
+                "品名 : %s",
+                subject
             )
 
-            sheet["B10"] = amount
-            sheet["F17"] = amount
+        # ---------------------------------
+        # 金額入力
+        # ---------------------------------
 
-        # -----------------------------
-        # 保存
-        # -----------------------------
-        workbook.save(output_path)
-        workbook.close()
+        if amount:
+
+            # カンマ除去して数値へ変換
+            value = int(
+                str(amount).replace(",", "")
+            )
+
+            # 見積金額
+            ws["B10"] = value
+
+            # 明細金額
+            ws["F17"] = value
+
+            logger.info(
+                "金額 : %s",
+                value
+            )
+
+        # -------------------------------------------------
+        # Excel保存
+        # -------------------------------------------------
+        wb.save(output_excel_path)
+
+        # ファイルを閉じる
+        wb.close()
 
         logger.info(
-            "Excel保存完了 : %s",
-            output_path
+            "Excel保存 : %s",
+            output_excel_path
         )
+
 
     def export_pdf(
         self,
         excel_path: str,
-        pdf_path: str,
-    ) -> None:
+        pdf_path: str
+    ):
         """
-        ExcelをPDFへ変換
+        Excel→PDF変換
+
+        Windows版Excel(COM)を利用して
+        ExcelファイルをPDFとして保存する。
         """
 
         logger.info("PDF出力開始")
 
+        # Excelアプリケーション起動
         excel = win32com.client.DispatchEx(
             "Excel.Application"
         )
 
+        # Excel画面を表示しない
         excel.Visible = False
+
+        # 保存確認ダイアログ等を表示しない
         excel.DisplayAlerts = False
 
         try:
 
-            workbook = excel.Workbooks.Open(
+            # Excelファイルを開く
+            wb = excel.Workbooks.Open(
                 os.path.abspath(excel_path)
             )
 
-            workbook.ExportAsFixedFormat(
-                0,      # PDF
+            # PDFとして保存
+            wb.ExportAsFixedFormat(
+                0,      # PDF形式
                 os.path.abspath(pdf_path)
             )
 
-            workbook.Close(False)
+            # 保存せず閉じる
+            wb.Close(False)
 
             logger.info(
-                "PDF保存完了 : %s",
+                "PDF保存 : %s",
                 pdf_path
             )
 
         finally:
 
+            # Excel終了
             excel.Quit()
