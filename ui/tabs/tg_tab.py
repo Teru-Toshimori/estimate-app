@@ -404,6 +404,12 @@ class TgTab(QWidget):
     def pdf_parse(self):
 
         try:
+        
+            # 処理開始
+            self.set_status(
+                "PDF解析処理中...",
+                0
+            )
 
             logger.info(
                 "TG PDF解析ボタン押下"
@@ -421,7 +427,6 @@ class TgTab(QWidget):
 
             input_dir = self.input_dir_edit.text().strip()
 
-
             if not input_dir:
 
                 QMessageBox.warning(
@@ -432,7 +437,6 @@ class TgTab(QWidget):
 
                 return
 
-
             # 入力フォルダ内のPDF一覧取得
             pdf_files = sorted(
                 glob.glob(
@@ -442,7 +446,6 @@ class TgTab(QWidget):
                     )
                 )
             )
-
 
             if not pdf_files:
 
@@ -482,9 +485,17 @@ class TgTab(QWidget):
             # PDF解析
             # -----------------------------
 
+            self.progress.setMaximum(len(pdf_files))
+            self.progress.setValue(0)
+
             # PDFを1件ずつ解析
-            for pdf_path in pdf_files:
+            for index, pdf_path in enumerate(pdf_files, start=1):
                 
+                self.set_status(
+                    f"PDF解析中 ({index}/{len(pdf_files)})",
+                    index
+                )
+
                 # PDFに対応するExcelを検索
                 excel_path = self.find_excel_for_pdf(
                     pdf_path,
@@ -554,9 +565,7 @@ class TgTab(QWidget):
                         item["data"].get("金額", "")
                     )
 
-
                 if result:
-
 
                     subject = result.get(
                         "品名",
@@ -568,7 +577,6 @@ class TgTab(QWidget):
                         ""
                     )
 
-
                     logger.info(
                         "品名 : %s",
                         subject
@@ -578,24 +586,21 @@ class TgTab(QWidget):
                         "金額 : %s",
                         amount
                     )
+                
+                self.progress.setValue(index)
 
-
+            self.progress.setValue(len(pdf_files))
+            
             self.set_status(
                 "PDF解析完了",
-                100
+                len(self.pdf_results)
             )
 
-
-            QMessageBox.information(
-                self,
-                "完了",
-                f"{len(self.pdf_results)}件解析しました"
-            )
-
-
+            self.add_log("")
+            self.add_log("========== PDF解析完了 ==========")
+            self.add_log(f"解析件数 : {len(self.pdf_results)}件")
 
         except Exception:
-
 
             logger.exception(
                 "TG PDF解析失敗"
@@ -675,6 +680,9 @@ class TgTab(QWidget):
     pdf_resultsへ保持する
     """
     def write_ledger(self):
+        
+        self.progress.setMaximum(1)
+        self.progress.setValue(0)
 
         if not self.pdf_results:
 
@@ -693,16 +701,42 @@ class TgTab(QWidget):
 
         writer = TgLedgerWriter()
 
-        writer.write(
-            ledger_path,
-            self.pdf_results
-        )
+        try:
 
-        QMessageBox.information(
-            self,
-            "完了",
-            "台帳記入が完了しました。"
-        )
+            self.set_status(
+                "台帳記入処理中...",
+                0
+            )
+            
+            writer.write(
+                ledger_path,
+                self.pdf_results
+            )
+
+            self.progress.setValue(1)
+
+            self.set_status(
+                "台帳記入完了",
+                1
+            )
+
+            self.ledger_completed = True
+
+            self.add_log("")
+            self.add_log("========== 台帳記入完了 ==========")
+            self.add_log("台帳への記入が完了しました。")
+        
+        except Exception as e:
+
+            logger.exception("台帳記入失敗")
+
+            self.add_log(f"ERROR : {e}")
+
+            QMessageBox.critical(
+                self,
+                "エラー",
+                str(e)
+            )
 
     """
     Excel・PDF一括出力
@@ -732,6 +766,16 @@ class TgTab(QWidget):
                 "先にPDF解析を実行してください。"
             )
             return
+        
+        # 台帳記入済み確認
+        if not getattr(self, "ledger_completed", False):
+
+            QMessageBox.warning(
+                self,
+                "確認",
+                "先に台帳記入を実行してください。"
+            )
+            return
 
         # 出力フォルダ
         output_dir = self.output_dir_edit.text().strip()
@@ -751,6 +795,11 @@ class TgTab(QWidget):
         )
 
         writer = TgExcelWriter()
+
+        self.set_status(
+            "Excel・PDF出力処理中...",
+            0
+        )
 
         self.progress.setMaximum(
             len(self.pdf_results)
@@ -774,6 +823,11 @@ class TgTab(QWidget):
                 start=1
             ):
 
+                self.set_status(
+                    f"Excel・PDF出力中 ({index}/{len(self.pdf_results)})",
+                    index
+                )
+
                 pdf_path = result["pdf_path"]
 
                 input_excel = result["excel_path"]
@@ -794,11 +848,6 @@ class TgTab(QWidget):
                 output_pdf = os.path.join(
                     output_dir,
                     filename + ".pdf"
-                )
-
-                self.set_status(
-                    f"出力中 ({index}/{len(self.pdf_results)})",
-                    index
                 )
 
                 self.add_log("")
@@ -840,22 +889,23 @@ class TgTab(QWidget):
 
                 self.progress.setValue(index)
 
+                self.set_status(
+                    f"出力中 ({index}/{len(self.pdf_results)})",
+                    index
+                )
+
+            self.progress.setValue(len(self.pdf_results))
+
             self.set_status(
-                "Excel・PDF出力完了",
+                f"Excel・PDF出力完了 ({success}件)",
                 len(self.pdf_results)
             )
 
             self.add_log("")
-            self.add_log("========== 出力終了 ==========")
-            self.add_log(
-                f"成功 : {success} 件"
-            )
-
-            QMessageBox.information(
-                self,
-                "完了",
-                f"{success}件のExcel・PDFを出力しました。"
-            )
+            self.add_log("========== 出力完了 ==========")
+            self.add_log(f"成功 : {success}件")
+            self.add_log(f"Excel : {success}件")
+            self.add_log(f"PDF   : {success}件")
 
         except Exception as e:
 
