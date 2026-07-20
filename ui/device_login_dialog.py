@@ -1,10 +1,9 @@
 import webbrowser
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
-    QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -12,102 +11,139 @@ from PySide6.QtWidgets import (
 
 
 class DeviceLoginDialog(QDialog):
+    """
+    Microsoft Device Code認証ダイアログ
+    """
 
-    def __init__(self, flow: dict, parent=None):
+    def __init__(
+        self,
+        flow: dict,
+        parent=None,
+    ):
         super().__init__(parent)
 
         self.flow = flow
 
-        self.setWindowTitle("Microsoftアカウント認証")
-        self.resize(560, 360)
+        self.setWindowTitle(
+            "Microsoftアカウント認証"
+        )
+
         self.setModal(True)
+        self.resize(650, 380)
 
-        self.setup_ui()
+        layout = QVBoxLayout(self)
 
-    def setup_ui(self):
-
-        main_layout = QVBoxLayout(self)
-
-        description = QLabel(
-            "OneDrive／SharePointへ接続するため、"
-            "Microsoftアカウントでサインインしてください。"
+        title = QLabel(
+            "Microsoftアカウントへサインインしてください"
         )
-        description.setWordWrap(True)
-
-        main_layout.addWidget(description)
-
-        url_label = QLabel("認証ページ")
-
-        self.url_edit = QLineEdit()
-        self.url_edit.setReadOnly(True)
-        self.url_edit.setText(
-            self.flow.get(
-                "verification_uri",
-                "https://microsoft.com/devicelogin",
-            )
+        title.setStyleSheet(
+            "font-size:18px;"
+            "font-weight:bold;"
         )
 
-        main_layout.addWidget(url_label)
-        main_layout.addWidget(self.url_edit)
+        layout.addWidget(title)
 
-        code_label = QLabel("認証コード")
-
-        self.code_edit = QLineEdit()
-        self.code_edit.setReadOnly(True)
-        self.code_edit.setText(
-            self.flow.get("user_code", "")
+        explanation = QLabel(
+            "① 下のボタンから認証ページを開きます。\n"
+            "② 表示されているコードを入力します。\n"
+            "③ 認証完了後、この画面を閉じてください。"
         )
 
-        main_layout.addWidget(code_label)
-        main_layout.addWidget(self.code_edit)
+        explanation.setWordWrap(True)
 
-        message_label = QLabel("認証案内")
+        layout.addWidget(explanation)
 
-        self.message_edit = QTextEdit()
-        self.message_edit.setReadOnly(True)
-        self.message_edit.setPlainText(
-            self.flow.get("message", "")
+        # 認証コード表示
+        self.code_text = QTextEdit()
+        self.code_text.setReadOnly(True)
+        self.code_text.setMaximumHeight(60)
+
+        user_code = self.flow.get(
+            "user_code",
+            ""
         )
 
-        main_layout.addWidget(message_label)
-        main_layout.addWidget(self.message_edit)
-
-        button_layout = QHBoxLayout()
-
-        browser_button = QPushButton(
-            "ブラウザーで認証ページを開く"
+        self.code_text.setPlainText(
+            user_code
         )
-        copy_button = QPushButton(
-            "認証コードをコピー"
+
+        layout.addWidget(self.code_text)
+
+        # 認証ページを開く
+        open_button = QPushButton(
+            "Microsoft認証ページを開く"
         )
+
+        open_button.clicked.connect(
+            self.open_login_page
+        )
+
+        layout.addWidget(open_button)
+
+        # メッセージ全文
+        message = self.flow.get(
+            "message",
+            "",
+        )
+
+        self.message_text = QTextEdit()
+
+        self.message_text.setReadOnly(True)
+
+        self.message_text.setPlainText(
+            message
+        )
+
+        layout.addWidget(
+            self.message_text
+        )
+
+        # 閉じる
         close_button = QPushButton(
-            "認証を続行"
+            "認証完了"
         )
 
-        browser_button.clicked.connect(
-            self.open_browser
-        )
-        copy_button.clicked.connect(
-            self.copy_code
-        )
         close_button.clicked.connect(
             self.accept
         )
 
-        button_layout.addWidget(browser_button)
-        button_layout.addWidget(copy_button)
-        button_layout.addWidget(close_button)
+        layout.addWidget(
+            close_button,
+            alignment=Qt.AlignRight,
+        )
 
-        main_layout.addLayout(button_layout)
+    def open_login_page(self):
+        """
+        Device Code認証ページをブラウザで開く。
 
-    def open_browser(self):
+        Device Flowでは
+        https://microsoft.com/devicelogin
+        を開く。
 
-        url = self.url_edit.text().strip()
+        deviceauth や token を
+        開いてしまうと
+        AADSTS900561になるため防止する。
+        """
 
-        if url:
-            webbrowser.open(url)
+        login_url = (
+            self.flow.get(
+                "verification_uri_complete"
+            )
+            or self.flow.get(
+                "verification_uri"
+            )
+            or "https://microsoft.com/devicelogin"
+        )
 
-    def copy_code(self):
+        # deviceauth や token が来た場合は強制的に正しいURLへ
+        lower_url = login_url.lower()
 
-        self.code_edit.selectAll()
-        self.code_edit.copy()
+        if (
+            "deviceauth" in lower_url
+            or "/token" in lower_url
+        ):
+            login_url = (
+                "https://microsoft.com/devicelogin"
+            )
+
+        webbrowser.open(login_url)

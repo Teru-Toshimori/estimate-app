@@ -1,435 +1,359 @@
-import os
+from collections.abc import Callable
+from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import (
+    QThread,
+    Qt,
+)
 from PySide6.QtWidgets import (
-    QApplication,
-    QFileDialog,
-    QFormLayout,
-    QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
-    QTextEdit,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from models.estimate_data import EstimateData
-from services.excel_writer import ExcelWriter
-from services.pdf_reader import PDFReader
 from ui.device_login_dialog import DeviceLoginDialog
-from workers.ledger_update_worker import LedgerUpdateWorker
+from workers.batch_estimate_worker import BatchEstimateWorker
 
 
 class TokuchoTbTab(QWidget):
     """
-    特調TB向けの見積書作成・台帳記入機能。
+    特調TB向けの見積書一括作成タブ。
+
+    共通入力値はMainWindowから取得する。
     """
 
-    device_login_requested = Signal(dict)
-    status_changed = Signal(str)
-
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        input_provider: Callable[[], dict],
+        parent=None,
+    ):
         super().__init__(parent)
 
-        self.ledger_thread = None
-        self.ledger_worker = None
+        self.input_provider = input_provider
+
+        self.batch_thread: QThread | None = None
+        self.batch_worker: BatchEstimateWorker | None = None
+
+        self.result_details: list[dict] = []
+
+        self.total_count = 0
+        self.success_count = 0
+        self.ng_count = 0
+        self.failed_count = 0
 
         self.setup_ui()
 
-        self.device_login_requested.connect(
-            self.show_device_login
-        )
-
-    def setup_ui(self):
+    # =====================================
+    # 画面作成
+    # =====================================
+    def setup_ui(self) -> None:
 
         main_layout = QVBoxLayout(self)
 
-        # =====================================
-        # タイトル
-        # =====================================
-        title_label = QLabel("特調TB 見積書作成")
+        main_layout.setContentsMargins(
+            12,
+            12,
+            12,
+            12,
+        )
+
+        main_layout.setSpacing(
+            8
+        )
+
+        title_label = QLabel(
+            "特調TB 見積書一括作成"
+        )
+
         title_label.setStyleSheet(
-            "font-size: 18px; font-weight: bold;"
+            "font-size: 18px;"
+            "font-weight: bold;"
         )
 
-        main_layout.addWidget(title_label)
+        main_layout.addWidget(
+            title_label
+        )
+
+        description_label = QLabel(
+            "画面上部の共通入力欄に指定された"
+            "業務計画書フォルダ、管理台帳URL、"
+            "利用者一覧URL、出力フォルダを"
+            "使用して一括処理します。"
+        )
+
+        description_label.setWordWrap(
+            True
+        )
+
+        main_layout.addWidget(
+            description_label
+        )
 
         # =====================================
-        # 業務計画書PDF
+        # 実行・中止ボタン
         # =====================================
-        pdf_label = QLabel("業務計画書（PDF）")
-
-        self.pdf_edit = QLineEdit()
-        self.pdf_edit.setPlaceholderText(
-            "業務計画書PDFを選択してください"
+        self.batch_execute_button = QPushButton(
+            "一括実行"
         )
 
-        self.pdf_button = QPushButton("参照")
-
-        pdf_layout = QHBoxLayout()
-        pdf_layout.addWidget(self.pdf_edit)
-        pdf_layout.addWidget(self.pdf_button)
-
-        main_layout.addWidget(pdf_label)
-        main_layout.addLayout(pdf_layout)
-
-        # =====================================
-        # OneDrive／SharePoint管理台帳URL
-        # =====================================
-        ledger_url_label = QLabel(
-            "管理台帳URL（OneDrive／SharePoint）"
+        self.batch_execute_button.setMinimumHeight(
+            42
         )
 
-        self.excel_edit = QLineEdit()
-        self.excel_edit.setPlaceholderText(
-            "https://会社名.sharepoint.com/..."
+        self.cancel_button = QPushButton(
+            "処理を中止"
         )
 
-        self.excel_button = QPushButton("貼り付け")
+        self.cancel_button.setMinimumHeight(
+            42
+        )
 
-        ledger_url_layout = QHBoxLayout()
-        ledger_url_layout.addWidget(self.excel_edit)
-        ledger_url_layout.addWidget(self.excel_button)
+        self.cancel_button.setEnabled(
+            False
+        )
 
-        main_layout.addWidget(ledger_url_label)
-        main_layout.addLayout(ledger_url_layout)
+        button_layout = QHBoxLayout()
+
+        button_layout.addWidget(
+            self.batch_execute_button
+        )
+
+        button_layout.addWidget(
+            self.cancel_button
+        )
+
+        main_layout.addLayout(
+            button_layout
+        )
 
         # =====================================
-        # 操作ボタン
+        # 進捗表示
         # =====================================
-        self.pdf_parse_button = QPushButton("PDF解析")
-        self.ledger_write_button = QPushButton("台帳記入")
-
-        operation_layout = QHBoxLayout()
-        operation_layout.addWidget(self.pdf_parse_button)
-        operation_layout.addWidget(self.ledger_write_button)
-
-        main_layout.addLayout(operation_layout)
-
-        # =====================================
-        # 抽出結果
-        # =====================================
-        result_group = QGroupBox("抽出結果")
-        result_form = QFormLayout()
-
-        self.application_edit = QLineEdit()
-        self.voucher_edit = QLineEdit()
-        self.estimate_edit = QLineEdit()
-        self.issue_edit = QLineEdit()
-        self.department_edit = QLineEdit()
-        self.subject_edit = QLineEdit()
-        self.model_code_edit = QLineEdit()
-        self.amount_edit = QLineEdit()
-        self.delivery_edit = QLineEdit()
-        self.outputs_edit = QTextEdit()
-
-        self.outputs_edit.setMinimumHeight(130)
-
-        result_form.addRow(
-            "申請書No",
-            self.application_edit,
+        self.progress_label = QLabel(
+            "処理進捗：0 / 0件"
         )
 
-        result_form.addRow(
-            "伝票番号",
-            self.voucher_edit,
+        main_layout.addWidget(
+            self.progress_label
         )
 
-        result_form.addRow(
-            "見積番号",
-            self.estimate_edit,
+        self.progress_bar = QProgressBar()
+
+        self.progress_bar.setRange(
+            0,
+            1,
         )
 
-        result_form.addRow(
-            "発行日",
-            self.issue_edit,
+        self.progress_bar.setValue(
+            0
         )
 
-        result_form.addRow(
-            "依頼部署",
-            self.department_edit,
+        self.progress_bar.setFormat(
+            "%p%"
         )
 
-        result_form.addRow(
-            "件名",
-            self.subject_edit,
+        main_layout.addWidget(
+            self.progress_bar
         )
 
-        result_form.addRow(
-            "車種コード",
-            self.model_code_edit,
+        self.current_file_label = QLabel(
+            "現在のファイル：なし"
         )
 
-        result_form.addRow(
-            "委託金額",
-            self.amount_edit,
+        self.current_file_label.setStyleSheet(
+            "color: #555555;"
         )
 
-        result_form.addRow(
-            "納期",
-            self.delivery_edit,
+        main_layout.addWidget(
+            self.current_file_label
         )
-
-        result_form.addRow(
-            "成果物名称",
-            self.outputs_edit,
-        )
-
-        result_group.setLayout(result_form)
-
-        main_layout.addWidget(result_group)
 
         # =====================================
-        # Excel・PDF出力
+        # 処理結果
         # =====================================
-        self.output_button = QPushButton(
-            "Excel・PDF出力"
+        result_title_label = QLabel(
+            "処理結果"
         )
 
-        main_layout.addWidget(self.output_button)
+        result_title_label.setStyleSheet(
+            "font-size: 15px;"
+            "font-weight: bold;"
+        )
 
-        # =====================================
-        # 状態表示
-        # =====================================
-        self.status_label = QLabel("待機中")
+        main_layout.addWidget(
+            result_title_label
+        )
+
+        self.result_table = QTableWidget(
+            0,
+            3,
+        )
+
+        self.result_table.setHorizontalHeaderLabels(
+            [
+                "伝票番号",
+                "見積/請求番号",
+                "結果",
+            ]
+        )
+
+        self.result_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+
+        self.result_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+
+        self.result_table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+
+        self.result_table.verticalHeader().setVisible(
+            False
+        )
+
+        table_header = (
+            self.result_table.horizontalHeader()
+        )
+
+        table_header.setSectionResizeMode(
+            0,
+            QHeaderView.ResizeMode.Stretch,
+        )
+
+        table_header.setSectionResizeMode(
+            1,
+            QHeaderView.ResizeMode.Stretch,
+        )
+
+        table_header.setSectionResizeMode(
+            2,
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
+
+        main_layout.addWidget(
+            self.result_table,
+            stretch=1,
+        )
+
+        self.summary_label = QLabel(
+            "処理件数：0件　"
+            "成功：0件　"
+            "NG：0件　"
+            "失敗：0件"
+        )
+
+        main_layout.addWidget(
+            self.summary_label
+        )
+
+        self.status_label = QLabel(
+            "待機中"
+        )
+
         self.status_label.setStyleSheet(
             "color: #555555;"
         )
 
-        main_layout.addWidget(self.status_label)
-
-        # =====================================
-        # イベント接続
-        # =====================================
-        self.pdf_button.clicked.connect(
-            self.select_pdf
+        main_layout.addWidget(
+            self.status_label
         )
 
-        self.excel_button.clicked.connect(
-            self.paste_excel_url
+        self.batch_execute_button.clicked.connect(
+            self.start_batch_process
         )
 
-        self.pdf_parse_button.clicked.connect(
-            self.parse_pdf
+        self.cancel_button.clicked.connect(
+            self.cancel_batch_process
         )
 
-        self.ledger_write_button.clicked.connect(
-            self.write_ledger
-        )
-
-        self.output_button.clicked.connect(
-            self.export_excel
-        )
-
-        self.status_changed.connect(
-            self.set_status
+        self.result_table.cellDoubleClicked.connect(
+            self.show_result_detail
         )
 
     # =====================================
-    # 状態表示
+    # 一括処理開始
     # =====================================
-    def set_status(self, message: str):
-
-        self.status_label.setText(message)
-
-    # =====================================
-    # PDF選択
-    # =====================================
-    def select_pdf(self):
-
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "業務計画書を選択",
-            "",
-            "PDFファイル (*.pdf)"
-        )
-
-        if file_path:
-            self.pdf_edit.setText(file_path)
-
-    # =====================================
-    # URL貼り付け
-    # =====================================
-    def paste_excel_url(self):
-
-        clipboard = QApplication.clipboard()
-        url = clipboard.text().strip()
-
-        if not url:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "クリップボードにURLがありません。"
-            )
-            return
-
-        if not url.startswith(
-            ("https://", "http://")
-        ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "クリップボードの内容がURLではありません。"
-            )
-            return
-
-        self.excel_edit.setText(url)
-
-    # =====================================
-    # PDF解析
-    # =====================================
-    def parse_pdf(self):
-
-        pdf_path = self.pdf_edit.text().strip()
-
-        if not pdf_path:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "業務計画書（PDF）を選択してください。"
-            )
-            return
-
-        if not os.path.exists(pdf_path):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "指定されたPDFファイルが見つかりません。\n\n"
-                f"{pdf_path}"
-            )
-            return
-
-        try:
-            self.set_status(
-                "PDFを解析しています..."
-            )
-
-            reader = PDFReader()
-            data = reader.parse(pdf_path)
-
-            voucher_no = os.path.splitext(
-                os.path.basename(pdf_path)
-            )[0]
-
-            data.voucher_no = voucher_no
-
-            self.application_edit.setText(
-                data.application_no
-            )
-
-            self.voucher_edit.setText(
-                data.voucher_no
-            )
-
-            self.department_edit.setText(
-                data.department
-            )
-
-            self.subject_edit.setText(
-                data.subject
-            )
-
-            self.model_code_edit.setText(
-                data.model_code
-            )
-
-            self.amount_edit.setText(
-                data.amount
-            )
-
-            self.delivery_edit.setText(
-                data.due_date
-            )
-
-            self.outputs_edit.setPlainText(
-                "\n".join(data.outputs)
-            )
-
-            self.estimate_edit.clear()
-            self.issue_edit.clear()
-
-            self.set_status(
-                "PDF解析が完了しました。"
-            )
-
-            QMessageBox.information(
-                self,
-                "完了",
-                "PDF解析が完了しました。"
-            )
-
-        except Exception as error:
-            self.set_status(
-                "PDF解析に失敗しました。"
-            )
-
-            QMessageBox.critical(
-                self,
-                "エラー",
-                "PDF解析に失敗しました。\n\n"
-                f"{error}"
-            )
-
-    # =====================================
-    # 管理台帳記入
-    # =====================================
-    def write_ledger(self):
-
-        share_url = self.excel_edit.text().strip()
-
-        if not share_url:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "管理台帳URLを入力してください。"
-            )
-            return
-
-        if not share_url.startswith(
-            ("https://", "http://")
-        ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "管理台帳URLの形式が正しくありません。"
-            )
-            return
-
-        if not self.application_edit.text().strip():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "先にPDF解析を実行してください。"
-            )
-            return
-
-        if not self.department_edit.text().strip():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "依頼部署が入力されていません。"
-            )
-            return
+    def start_batch_process(self) -> None:
 
         if (
-            self.ledger_thread is not None
-            and self.ledger_thread.isRunning()
+            self.batch_thread is not None
+            and self.batch_thread.isRunning()
         ):
             QMessageBox.warning(
                 self,
                 "確認",
-                "現在、台帳記入処理を実行中です。"
+                "現在、一括処理を実行中です。",
             )
             return
 
-        confirm = QMessageBox.question(
+        inputs = self.input_provider()
+
+        pdf_folder = str(
+            inputs.get(
+                "pdf_folder",
+                "",
+            )
+        ).strip()
+
+        share_url = str(
+            inputs.get(
+                "share_url",
+                "",
+            )
+        ).strip()
+
+        user_master_url = str(
+            inputs.get(
+                "user_master_url",
+                "",
+            )
+        ).strip()
+
+        output_folder = str(
+            inputs.get(
+                "output_folder",
+                "",
+            )
+        ).strip()
+
+        if not self.validate_common_inputs(
+            pdf_folder=pdf_folder,
+            share_url=share_url,
+            user_master_url=user_master_url,
+            output_folder=output_folder,
+        ):
+            return
+
+        pdf_files = self.get_pdf_files(
+            pdf_folder
+        )
+
+        if not pdf_files:
+            QMessageBox.warning(
+                self,
+                "確認",
+                "選択した業務計画書フォルダに"
+                "PDFファイルがありません。",
+            )
+            return
+
+        confirmation = QMessageBox.question(
             self,
-            "台帳記入の確認",
-            "OneDrive／SharePoint上の管理台帳へ"
-            "新しい行を追加します。\n\n"
+            "一括実行の確認",
+            f"{len(pdf_files)}件のPDFを処理します。\n\n"
+            f"業務計画書フォルダ：\n{pdf_folder}\n\n"
+            f"管理台帳URL：\n{share_url}\n\n"
+            f"利用者一覧URL：\n{user_master_url}\n\n"
+            f"出力フォルダ：\n{output_folder}\n\n"
             "実行してよろしいですか？",
             (
                 QMessageBox.StandardButton.Yes
@@ -438,102 +362,262 @@ class TokuchoTbTab(QWidget):
             QMessageBox.StandardButton.No,
         )
 
-        if confirm != QMessageBox.StandardButton.Yes:
+        if (
+            confirmation
+            != QMessageBox.StandardButton.Yes
+        ):
             return
 
-        try:
-            data = self.create_estimate_data()
+        self.clear_results()
 
-            self.start_ledger_update(
-                share_url=share_url,
-                data=data,
-            )
-
-        except Exception as error:
-            QMessageBox.critical(
-                self,
-                "エラー",
-                "台帳記入処理を開始できませんでした。\n\n"
-                f"{error}"
-            )
+        self.start_batch_worker(
+            pdf_files=pdf_files,
+            share_url=share_url,
+            user_master_url=user_master_url,
+            output_folder=output_folder,
+        )
 
     # =====================================
-    # バックグラウンド更新開始
+    # 共通入力チェック
     # =====================================
-    def start_ledger_update(
+    def validate_common_inputs(
         self,
+        pdf_folder: str,
         share_url: str,
-        data: EstimateData,
-    ):
+        user_master_url: str,
+        output_folder: str,
+    ) -> bool:
 
-        self.ledger_write_button.setEnabled(False)
-        self.ledger_write_button.setText(
-            "台帳記入中..."
+        if not pdf_folder:
+            QMessageBox.warning(
+                self,
+                "確認",
+                "画面上部で業務計画書フォルダを"
+                "選択してください。",
+            )
+            return False
+
+        pdf_folder_path = Path(
+            pdf_folder
+        )
+
+        if not pdf_folder_path.is_dir():
+            QMessageBox.warning(
+                self,
+                "確認",
+                "業務計画書フォルダが"
+                "見つかりません。\n\n"
+                f"{pdf_folder}",
+            )
+            return False
+
+        if not self.is_valid_url(
+            share_url
+        ):
+            QMessageBox.warning(
+                self,
+                "確認",
+                "管理台帳URLを正しく"
+                "入力してください。",
+            )
+            return False
+
+        if not self.is_valid_url(
+            user_master_url
+        ):
+            QMessageBox.warning(
+                self,
+                "確認",
+                "利用者一覧URLを正しく"
+                "入力してください。",
+            )
+            return False
+
+        if not output_folder:
+            QMessageBox.warning(
+                self,
+                "確認",
+                "画面上部で出力フォルダを"
+                "選択してください。",
+            )
+            return False
+
+        output_folder_path = Path(
+            output_folder
+        )
+
+        if not output_folder_path.is_dir():
+            QMessageBox.warning(
+                self,
+                "確認",
+                "出力フォルダが"
+                "見つかりません。\n\n"
+                f"{output_folder}",
+            )
+            return False
+
+        return True
+
+    # =====================================
+    # URLチェック
+    # =====================================
+    def is_valid_url(
+        self,
+        value: str,
+    ) -> bool:
+
+        return bool(
+            value
+            and value.startswith(
+                (
+                    "https://",
+                    "http://",
+                )
+            )
+        )
+
+    # =====================================
+    # Worker開始
+    # =====================================
+    def start_batch_worker(
+        self,
+        pdf_files: list[Path],
+        share_url: str,
+        user_master_url: str,
+        output_folder: str,
+    ) -> None:
+
+        self.update_progress(
+            current=0,
+            total=len(pdf_files),
+            file_name="",
+        )
+
+        self.batch_execute_button.setEnabled(
+            False
+        )
+
+        self.batch_execute_button.setText(
+            "一括処理中..."
+        )
+
+        self.cancel_button.setEnabled(
+            True
         )
 
         self.set_status(
-            "管理台帳の更新を開始しています..."
+            "一括処理を開始しています..."
         )
 
-        self.ledger_thread = QThread(self)
+        self.batch_thread = QThread(
+            self
+        )
 
-        self.ledger_worker = LedgerUpdateWorker(
+        self.batch_worker = BatchEstimateWorker(
+            pdf_files=pdf_files,
             share_url=share_url,
-            data=data,
-            device_flow_callback=(
-                self.request_device_login
-            ),
+            user_master_url=user_master_url,
+            output_folder=output_folder,
         )
 
-        self.ledger_worker.moveToThread(
-            self.ledger_thread
+        self.batch_worker.moveToThread(
+            self.batch_thread
         )
 
-        self.ledger_thread.started.connect(
-            self.ledger_worker.run
+        self.batch_thread.started.connect(
+            self.batch_worker.run
         )
 
-        self.ledger_worker.progress.connect(
+        self.batch_worker.progress.connect(
             self.set_status
         )
 
-        self.ledger_worker.finished.connect(
-            self.on_ledger_update_finished
+        self.batch_worker.progress_count.connect(
+            self.update_progress
         )
 
-        self.ledger_worker.failed.connect(
-            self.on_ledger_update_failed
+        self.batch_worker.device_login_requested.connect(
+            self.show_device_login
         )
 
-        self.ledger_worker.finished.connect(
-            self.ledger_thread.quit
+        self.batch_worker.item_finished.connect(
+            self.on_batch_item_finished
         )
 
-        self.ledger_worker.failed.connect(
-            self.ledger_thread.quit
+        self.batch_worker.batch_finished.connect(
+            self.on_batch_finished
         )
 
-        self.ledger_thread.finished.connect(
-            self.ledger_worker.deleteLater
+        self.batch_worker.batch_failed.connect(
+            self.on_batch_failed
         )
 
-        self.ledger_thread.finished.connect(
-            self.clear_ledger_thread
+        self.batch_worker.batch_finished.connect(
+            self.batch_thread.quit
         )
 
-        self.ledger_thread.start()
+        self.batch_worker.batch_failed.connect(
+            self.batch_thread.quit
+        )
+
+        self.batch_thread.finished.connect(
+            self.batch_worker.deleteLater
+        )
+
+        self.batch_thread.finished.connect(
+            self.clear_batch_thread
+        )
+
+        self.batch_thread.start()
 
     # =====================================
-    # 認証要求
+    # 中止
     # =====================================
-    def request_device_login(self, flow: dict):
+    def cancel_batch_process(self) -> None:
 
-        self.device_login_requested.emit(flow)
+        if self.batch_worker is None:
+            return
+
+        confirmation = QMessageBox.question(
+            self,
+            "処理中止の確認",
+            "一括処理を中止しますか？\n\n"
+            "現在処理中のPDFが完了したあとで"
+            "停止します。",
+            (
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+            ),
+            QMessageBox.StandardButton.No,
+        )
+
+        if (
+            confirmation
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+
+        self.batch_worker.cancel()
+
+        self.cancel_button.setEnabled(
+            False
+        )
+
+        self.cancel_button.setText(
+            "中止要求済み"
+        )
+
+        self.set_status(
+            "処理の中止を要求しました。"
+        )
 
     # =====================================
-    # 認証ダイアログ
+    # Microsoft認証
     # =====================================
-    def show_device_login(self, flow: dict):
+    def show_device_login(
+        self,
+        flow: dict,
+    ) -> None:
 
         dialog = DeviceLoginDialog(
             flow=flow,
@@ -543,217 +627,416 @@ class TokuchoTbTab(QWidget):
         dialog.exec()
 
     # =====================================
-    # 更新成功
+    # 結果受信
     # =====================================
-    def on_ledger_update_finished(
+    def on_batch_item_finished(
         self,
         result: dict,
-    ):
+    ) -> None:
 
-        self.estimate_edit.setText(
-            result["estimate_no"]
+        self.result_details.append(
+            result
         )
 
-        self.issue_edit.setText(
-            result["issue_date"]
+        result_text = str(
+            result.get(
+                "result",
+                "",
+            )
         )
 
-        self.set_status(
-            "管理台帳の更新が完了しました。"
+        self.add_result_row(
+            voucher_no=str(
+                result.get(
+                    "voucher_no",
+                    "",
+                )
+            ),
+            estimate_no=str(
+                result.get(
+                    "estimate_no",
+                    "",
+                )
+            ),
+            result_text=result_text,
         )
+
+        self.total_count += 1
+
+        if result_text == "成功":
+            self.success_count += 1
+
+        elif result_text == "NG":
+            self.ng_count += 1
+
+        else:
+            self.failed_count += 1
+
+        self.update_summary(
+            total=self.total_count,
+            success=self.success_count,
+            ng=self.ng_count,
+            failed=self.failed_count,
+        )
+
+    # =====================================
+    # 完了
+    # =====================================
+    def on_batch_finished(
+        self,
+        summary: dict,
+    ) -> None:
+
+        total = int(
+            summary.get(
+                "total",
+                0,
+            )
+        )
+
+        processed = int(
+            summary.get(
+                "processed",
+                0,
+            )
+        )
+
+        success = int(
+            summary.get(
+                "success",
+                0,
+            )
+        )
+
+        ng = int(
+            summary.get(
+                "ng",
+                0,
+            )
+        )
+
+        failed = int(
+            summary.get(
+                "failed",
+                0,
+            )
+        )
+
+        cancelled = bool(
+            summary.get(
+                "cancelled",
+                False,
+            )
+        )
+
+        self.update_progress(
+            current=processed,
+            total=total,
+            file_name="",
+        )
+
+        self.update_summary(
+            total=processed,
+            success=success,
+            ng=ng,
+            failed=failed,
+        )
+
+        if cancelled:
+            title = "中止"
+            self.set_status(
+                "一括処理を中止しました。"
+            )
+        else:
+            title = "完了"
+            self.set_status(
+                "一括処理が完了しました。"
+            )
 
         QMessageBox.information(
             self,
-            "完了",
-            "OneDrive／SharePoint上の管理台帳へ"
-            "記入しました。\n\n"
-            f"ファイル："
-            f"{result.get('remote_name', '')}\n"
-            f"シート：{result['sheet_name']}\n"
-            f"行：{result['row']}\n"
-            f"見積番号：{result['estimate_no']}\n"
-            f"発行日：{result['issue_date']}\n"
-            f"発行者：{result.get('issuer_name', '')}"
+            title,
+            f"処理対象：{total}件\n"
+            f"処理済み：{processed}件\n"
+            f"成功：{success}件\n"
+            f"NG：{ng}件\n"
+            f"失敗：{failed}件",
         )
 
     # =====================================
-    # 更新失敗
+    # 全体エラー
     # =====================================
-    def on_ledger_update_failed(
+    def on_batch_failed(
         self,
         error_message: str,
-    ):
+    ) -> None:
 
         self.set_status(
-            "管理台帳の更新に失敗しました。"
+            "一括処理に失敗しました。"
+        )
+
+        self.current_file_label.setText(
+            "現在のファイル：処理停止"
         )
 
         QMessageBox.critical(
             self,
             "エラー",
-            "OneDrive／SharePointの台帳記入に"
-            "失敗しました。\n\n"
-            f"{error_message}"
+            error_message,
         )
 
     # =====================================
-    # スレッド終了
+    # 詳細表示
     # =====================================
-    def clear_ledger_thread(self):
+    def show_result_detail(
+        self,
+        row: int,
+        column: int,
+    ) -> None:
 
-        self.ledger_write_button.setEnabled(True)
-        self.ledger_write_button.setText(
-            "台帳記入"
+        _ = column
+
+        if not (
+            0
+            <= row
+            < len(self.result_details)
+        ):
+            return
+
+        result = self.result_details[row]
+
+        detail_message = (
+            f"伝票番号："
+            f"{result.get('voucher_no', '')}\n"
+            f"見積/請求番号："
+            f"{result.get('estimate_no', '') or '未採番'}\n"
+            f"結果："
+            f"{result.get('result', '')}\n\n"
+            f"詳細：\n"
+            f"{result.get('message', '') or '詳細情報なし'}"
         )
 
-        thread = self.ledger_thread
+        QMessageBox.information(
+            self,
+            "処理結果詳細",
+            detail_message,
+        )
 
-        self.ledger_worker = None
-        self.ledger_thread = None
+    # =====================================
+    # 進捗
+    # =====================================
+    def update_progress(
+        self,
+        current: int,
+        total: int,
+        file_name: str,
+    ) -> None:
+
+        safe_total = max(
+            total,
+            1,
+        )
+
+        safe_current = min(
+            max(
+                current,
+                0,
+            ),
+            safe_total,
+        )
+
+        self.progress_bar.setRange(
+            0,
+            safe_total,
+        )
+
+        self.progress_bar.setValue(
+            safe_current
+        )
+
+        self.progress_label.setText(
+            f"処理進捗：{current} / {total}件"
+        )
+
+        self.current_file_label.setText(
+            f"現在のファイル："
+            f"{file_name or 'なし'}"
+        )
+
+    # =====================================
+    # 状態表示
+    # =====================================
+    def set_status(
+        self,
+        message: str,
+    ) -> None:
+
+        self.status_label.setText(
+            message
+        )
+
+    # =====================================
+    # PDF一覧
+    # =====================================
+    def get_pdf_files(
+        self,
+        folder_path: str,
+    ) -> list[Path]:
+
+        folder = Path(
+            folder_path
+        )
+
+        if not folder.is_dir():
+            return []
+
+        return sorted(
+            [
+                path
+                for path in folder.iterdir()
+                if (
+                    path.is_file()
+                    and path.suffix.lower()
+                    == ".pdf"
+                )
+            ],
+            key=lambda path: (
+                path.name.casefold()
+            ),
+        )
+
+    # =====================================
+    # 結果初期化
+    # =====================================
+    def clear_results(self) -> None:
+
+        self.result_table.setRowCount(
+            0
+        )
+
+        self.result_details.clear()
+
+        self.total_count = 0
+        self.success_count = 0
+        self.ng_count = 0
+        self.failed_count = 0
+
+        self.update_summary(
+            total=0,
+            success=0,
+            ng=0,
+            failed=0,
+        )
+
+        self.update_progress(
+            current=0,
+            total=0,
+            file_name="",
+        )
+
+    # =====================================
+    # 結果行追加
+    # =====================================
+    def add_result_row(
+        self,
+        voucher_no: str,
+        estimate_no: str,
+        result_text: str,
+    ) -> None:
+
+        row = self.result_table.rowCount()
+
+        self.result_table.insertRow(
+            row
+        )
+
+        voucher_item = QTableWidgetItem(
+            voucher_no
+        )
+
+        estimate_item = QTableWidgetItem(
+            estimate_no
+        )
+
+        result_item = QTableWidgetItem(
+            result_text
+        )
+
+        result_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
+
+        self.result_table.setItem(
+            row,
+            0,
+            voucher_item,
+        )
+
+        self.result_table.setItem(
+            row,
+            1,
+            estimate_item,
+        )
+
+        self.result_table.setItem(
+            row,
+            2,
+            result_item,
+        )
+
+    # =====================================
+    # 件数表示
+    # =====================================
+    def update_summary(
+        self,
+        total: int,
+        success: int,
+        ng: int,
+        failed: int,
+    ) -> None:
+
+        self.summary_label.setText(
+            f"処理件数：{total}件　"
+            f"成功：{success}件　"
+            f"NG：{ng}件　"
+            f"失敗：{failed}件"
+        )
+
+    # =====================================
+    # スレッド後始末
+    # =====================================
+    def clear_batch_thread(self) -> None:
+
+        self.batch_execute_button.setEnabled(
+            True
+        )
+
+        self.batch_execute_button.setText(
+            "一括実行"
+        )
+
+        self.cancel_button.setEnabled(
+            False
+        )
+
+        self.cancel_button.setText(
+            "処理を中止"
+        )
+
+        thread = self.batch_thread
+
+        self.batch_worker = None
+        self.batch_thread = None
 
         if thread is not None:
             thread.deleteLater()
 
     # =====================================
-    # Excel・PDF出力
-    # =====================================
-    def export_excel(self):
-
-        if not self.application_edit.text().strip():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "先にPDF解析を実行してください。"
-            )
-            return
-
-        if not self.estimate_edit.text().strip():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "先に台帳記入を実行してください。"
-            )
-            return
-
-        save_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "見積書を保存",
-            "sample.xlsx",
-            "Excelファイル (*.xlsx)"
-        )
-
-        if not save_path:
-            return
-
-        if not save_path.lower().endswith(".xlsx"):
-            save_path += ".xlsx"
-
-        self.output_button.setEnabled(False)
-        self.output_button.setText(
-            "出力中..."
-        )
-
-        QApplication.processEvents()
-
-        try:
-            data = self.create_estimate_data()
-
-            writer = ExcelWriter()
-
-            writer.write(
-                "resources/TB_見積書フォーマット.xlsx",
-                save_path,
-                data
-            )
-
-            pdf_path = os.path.splitext(
-                save_path
-            )[0] + ".pdf"
-
-            self.set_status(
-                "Excel・PDF出力が完了しました。"
-            )
-
-            QMessageBox.information(
-                self,
-                "完了",
-                "Excel出力とPDF出力が完了しました。\n\n"
-                f"Excel：{save_path}\n"
-                f"PDF：{pdf_path}"
-            )
-
-        except Exception as error:
-            self.set_status(
-                "Excel・PDF出力に失敗しました。"
-            )
-
-            QMessageBox.critical(
-                self,
-                "エラー",
-                "Excel・PDF出力に失敗しました。\n\n"
-                f"{error}"
-            )
-
-        finally:
-            self.output_button.setEnabled(True)
-            self.output_button.setText(
-                "Excel・PDF出力"
-            )
-
-    # =====================================
-    # EstimateData作成
-    # =====================================
-    def create_estimate_data(
-        self,
-    ) -> EstimateData:
-
-        outputs = [
-            line.strip()
-            for line in (
-                self.outputs_edit
-                .toPlainText()
-                .splitlines()
-            )
-            if line.strip()
-        ]
-
-        return EstimateData(
-            application_no=(
-                self.application_edit.text().strip()
-            ),
-            voucher_no=(
-                self.voucher_edit.text().strip()
-            ),
-            estimate_no=(
-                self.estimate_edit.text().strip()
-            ),
-            issue_date=(
-                self.issue_edit.text().strip()
-            ),
-            department=(
-                self.department_edit.text().strip()
-            ),
-            subject=(
-                self.subject_edit.text().strip()
-            ),
-            model_code=(
-                self.model_code_edit.text().strip()
-            ),
-            amount=(
-                self.amount_edit.text().strip()
-            ),
-            due_date=(
-                self.delivery_edit.text().strip()
-            ),
-            outputs=outputs,
-        )
-
-    # =====================================
-    # 終了可能か確認
+    # 終了可能判定
     # =====================================
     def can_close(self) -> bool:
 
         return not (
-            self.ledger_thread is not None
-            and self.ledger_thread.isRunning()
+            self.batch_thread is not None
+            and self.batch_thread.isRunning()
         )

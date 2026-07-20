@@ -1,7 +1,7 @@
 {
-  "client_id": "23e7ec33-d86b-45c5-b278-5c6b45d02b98",
-  "tenant_id": "ef501709-5a34-4611-9ba4-8ad780d88995",
-  "user_master_url": "https://otameshisharepoint-my.sharepoint.com/:x:/g/personal/teru_toshimori_otameshisharepoint_onmicrosoft_com/IQAxlcofs-vSQa1DDIJGCJaVAScZ7ABTk1wM6al5WjR6E7w?e=0cG5xj",
+  "client_id": "32fbaaa1-8906-49ff-a29e-8f8ae74686d7",
+  "tenant_id": "3c498207-49f0-4f6d-a699-b2b6ca43384d",
+  "user_master_url": "https://aiminfo365-my.sharepoint.com/:x:/g/personal/akira_nakashima_aiminfo365_onmicrosoft_com/IQCbczTeyKvnRI19nOz-xSjqAYXfNXq4f61OM-d8S-kWOAU?e=KowbOx",
   "scopes": [
     "User.Read",
     "Files.ReadWrite"
