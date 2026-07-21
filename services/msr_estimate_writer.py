@@ -38,7 +38,10 @@ class MsrEstimateWriter:
 
     出力ファイルには選択した担当者シートのみを残し、
     他の担当者シートは削除する。
-    また、同名のPDFも合わせて出力する。
+
+    PDF出力はここでは行わない。K1（見積書発行番号）が
+    台帳記入前は未確定のため、台帳記入後
+    （MsrLedgerWriter側）でPDFを出力する。
     """
 
     # 構成内訳のデータ行範囲
@@ -227,18 +230,10 @@ class MsrEstimateWriter:
 
             book.save(output_path)
 
-            # =====================================
-            # PDF出力
-            # =====================================
-            pdf_path = (
-                os.path.splitext(output_path)[0]
-                + ".pdf"
-            )
-
-            sheet.api.ExportAsFixedFormat(
-                Type=0,
-                Filename=pdf_path,
-            )
+            # PDF出力は行わない。
+            # 台帳記入でK1（見積書発行番号）を
+            # 反映した後（MsrLedgerWriter側）で
+            # 出力する。
 
         finally:
 

@@ -18,6 +18,9 @@ class MsrLedgerWriter:
       既に記入されていればその番号をそのまま使う。
     - 採番した番号を、対応する出力見積書のK1へ
       「No.XXXXXXXX」の形式で転記する。
+    - K1確定後の最終状態で、同名のPDFも出力する
+      （PDF内容と台帳の内容を一致させるため、
+      MsrEstimateWriter側ではPDF出力しない）。
 
     記入する列：
     B  No（空欄なら前行＋1）
@@ -185,6 +188,20 @@ class MsrLedgerWriter:
             )
 
             estimate_book.save(estimate_path)
+
+            # =====================================
+            # PDF出力
+            # （K1確定後の最終状態で出力する）
+            # =====================================
+            pdf_path = (
+                os.path.splitext(estimate_path)[0]
+                + ".pdf"
+            )
+
+            estimate_sheet.api.ExportAsFixedFormat(
+                Type=0,
+                Filename=pdf_path,
+            )
 
             return {
                 "row": target_row,
