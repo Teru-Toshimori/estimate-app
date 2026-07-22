@@ -5,7 +5,7 @@ import logging
 
 import fitz  # PyMuPDF
 
-from services.tg_openai_vision import extract_tg_data
+from services.tg_openai_vision import TgOpenAIVision
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,10 @@ class TgPdfReader:
     """
 
     def __init__(self):
-        pass
+        # ---------------------------------
+        # TgOpenAIVision インスタンス生成
+        # ---------------------------------
+        self.vision = TgOpenAIVision()
 
 
     def convert_pdf_to_image(self, pdf_path):
@@ -152,7 +155,7 @@ class TgPdfReader:
             # OpenAI Vision解析
             # -------------------------
 
-            result = extract_tg_data(
+            result = self.vision.extract_tg_data(
                 image_path
             )
 
