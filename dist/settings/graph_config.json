@@ -1,9 +1,0 @@
-{
-  "client_id": "23e7ec33-d86b-45c5-b278-5c6b45d02b98",
-  "tenant_id": "ef501709-5a34-4611-9ba4-8ad780d88995",
-  "scopes": [
-    "User.Read",
-    "Files.ReadWrite",
-    "Files.ReadWrite.All"
-  ]
-}

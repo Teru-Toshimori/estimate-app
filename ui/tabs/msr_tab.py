@@ -1,4 +1,5 @@
 import os
+import re
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
@@ -17,13 +18,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from services.msr_estimate_writer import MsrEstimateWriter
-from services.msr_input_reader import MsrInputReader
-from services.template_resolver import TemplateResolver
+from services.writers.msr_estimate_writer import MsrEstimateWriter
+from services.readers.msr_input_reader import MsrInputReader
+from services.excel.template_resolver import TemplateResolver
 from ui.device_login_dialog import DeviceLoginDialog
 from workers.msr_ledger_update_worker import (
     MsrLedgerUpdateWorker,
 )
+from ui.custom_message_dialog import CustomMessageDialog
 
 
 class MsrTab(QWidget):
@@ -108,7 +110,7 @@ class MsrTab(QWidget):
 
         # タイトル
         title_label = QLabel(
-            "MSR 見積書作成"
+            "MSR 見積書一括作成"
         )
         title_label.setStyleSheet(
             "font-size: 18px;"
@@ -119,8 +121,8 @@ class MsrTab(QWidget):
         description_label = QLabel(
             "画面上部の共通入力欄に指定された"
             "見積書発行依頼フォルダ、管理台帳URL、"
-            "出力フォルダを使用し、見積書作成から"
-            "管理台帳記入までを一括で処理します。"
+            "利用者一覧URL、出力フォルダを使用して"
+            "一括処理します。"
         )
         description_label.setWordWrap(True)
         main_layout.addWidget(description_label)
@@ -129,7 +131,7 @@ class MsrTab(QWidget):
         staff_layout = QHBoxLayout()
 
         staff_label = QLabel("担当者")
-        staff_label.setMinimumWidth(80)
+        staff_label.setFixedWidth(80)
 
         self.staff_combo = QComboBox()
         self.staff_combo.setMinimumHeight(32)
@@ -139,7 +141,11 @@ class MsrTab(QWidget):
             self.staff_combo,
             stretch=1,
         )
+
         main_layout.addLayout(staff_layout)
+
+        # 担当者とボタンの間隔を少し詰める
+        main_layout.addSpacing(4)
 
         self.load_staff_sheets()
 
@@ -308,10 +314,6 @@ class MsrTab(QWidget):
             return
 
         self.staff_combo.addItems(sheet_names)
-
-    # =====================================
-    # 表示制御
-    # =====================================
     def update_progress(
         self,
         current: int,
@@ -404,12 +406,9 @@ class MsrTab(QWidget):
             str(result_text or "")
         )
 
-        request_item.setTextAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
-        estimate_item.setTextAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
+        # 見積依頼番号と見積/請求番号は
+        # QTableWidgetの標準設定で左揃えにする
+
         result_item.setTextAlignment(
             Qt.AlignmentFlag.AlignCenter
         )
@@ -485,7 +484,7 @@ class MsrTab(QWidget):
 
         self.update_result_summary()
 
-    def update_result_summary(self) -> None:
+    def get_result_counts(self) -> dict[str, int]:
 
         total_count = self.result_table.rowCount()
         success_count = 0
@@ -511,34 +510,30 @@ class MsrTab(QWidget):
             elif result_text == self.RESULT_FAILED:
                 failed_count += 1
 
-        self.summary_label.setText(
-            f"処理件数：{total_count}件　"
-            f"成功：{success_count}件　"
-            f"NG：{ng_count}件　"
-            f"失敗：{failed_count}件"
+        processed_count = (
+            success_count
+            + ng_count
+            + failed_count
         )
 
-    def build_request_no_text(
-        self,
-        request,
-    ) -> str:
+        return {
+            "total": total_count,
+            "processed": processed_count,
+            "success": success_count,
+            "ng": ng_count,
+            "failed": failed_count,
+        }
 
-        request_numbers = []
+    def update_result_summary(self) -> None:
 
-        for row in request.rows:
-            request_no = str(
-                row.request_no or ""
-            ).strip()
+        counts = self.get_result_counts()
 
-            if (
-                request_no
-                and request_no not in request_numbers
-            ):
-                request_numbers.append(
-                    request_no
-                )
-
-        return "、".join(request_numbers)
+        self.summary_label.setText(
+            f"処理件数：{counts['total']}件　"
+            f"成功：{counts['success']}件　"
+            f"NG：{counts['ng']}件　"
+            f"失敗：{counts['failed']}件"
+        )
 
     # =====================================
     # 共通入力
@@ -671,28 +666,22 @@ class MsrTab(QWidget):
             )
             return
 
-        confirm = QMessageBox.question(
-            self,
-            "一括実行の確認",
-            f"Excelファイルが {len(candidates)} 件"
-            "見つかりました。\n\n"
-            "見積書発行依頼として読み取れたファイルを"
-            "対象に、次の処理を行います。\n\n"
-            "1. 見積書の作成\n"
-            "2. 管理台帳への記入\n"
-            "3. 見積/請求番号の反映\n\n"
-            "実行してよろしいですか？",
-            (
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No
+        confirmed = CustomMessageDialog.confirm(
+            parent=self,
+            title="一括実行の確認",
+            heading="見積書の一括処理を開始します",
+            message=(
+                f"対象ファイル：{len(candidates)}件\n\n"
+                "以下の処理を実行します。\n\n"
+                "✓ 見積書作成\n"
+                "✓ 管理台帳更新\n"
+                "✓ 見積／請求番号反映"
             ),
-            QMessageBox.StandardButton.No,
+            confirm_text="実行",
+            cancel_text="キャンセル",
         )
 
-        if (
-            confirm
-            != QMessageBox.StandardButton.Yes
-        ):
+        if not confirmed:
             return
 
         self.cancel_requested = False
@@ -812,10 +801,6 @@ class MsrTab(QWidget):
             return False
 
         return True
-
-    # =====================================
-    # Input候補
-    # =====================================
     def find_input_candidates(
         self,
         input_folder: str,
@@ -915,68 +900,88 @@ class MsrTab(QWidget):
                 )
                 continue
 
-            request_no = self.build_request_no_text(
-                request
-            )
+            # 明細（見積依頼番号）ごとに1ファイル出力
+            for row in request.rows:
 
-            base_output_name = (
-                os.path.splitext(file_name)[0]
-                + "_御見積書"
-            )
+                request_no = row.request_no
 
-            output_path = (
-                self.create_unique_output_path(
-                    output_folder=output_folder,
-                    file_name_base=(
-                        base_output_name
-                    ),
-                    extension=".xlsx",
-                )
-            )
-
-            result_key = output_path
-
-            self.add_result_row(
-                request_no=request_no,
-                estimate_no="",
-                result_text="",
-                result_key=result_key,
-                detail="処理中",
-            )
-
-            try:
-                writer.write(
-                    format_path=template_path,
-                    output_path=output_path,
-                    request=request,
-                    staff_sheet=staff_sheet,
+                base_output_name = (
+                    self.sanitize_file_name(
+                        f"【お見積書】{request_no}"
+                    )
                 )
 
-                self.transcription_success_count += 1
+                output_path = (
+                    self.create_unique_output_path(
+                        output_folder=output_folder,
+                        file_name_base=(
+                            base_output_name
+                        ),
+                        extension=".xlsx",
+                    )
+                )
 
-                jobs.append({
-                    "file_name": file_name,
-                    "request_no": request_no,
-                    "estimate_path": output_path,
-                    "request": request,
-                    "result_key": result_key,
-                })
+                result_key = output_path
 
-            except Exception as error:
-                self.transcription_fail_count += 1
-
-                self.update_result_row(
-                    result_key=result_key,
+                self.add_result_row(
                     request_no=request_no,
                     estimate_no="",
-                    result_text=self.RESULT_FAILED,
-                    detail=(
-                        f"見積書作成失敗：{file_name}\n"
-                        f"{error}"
-                    ),
+                    result_text="",
+                    result_key=result_key,
+                    detail="処理中",
                 )
 
+                try:
+                    writer.write(
+                        format_path=template_path,
+                        output_path=output_path,
+                        request=request,
+                        row=row,
+                        staff_sheet=staff_sheet,
+                    )
+
+                    self.transcription_success_count += 1
+
+                    jobs.append({
+                        "file_name": file_name,
+                        "request_no": request_no,
+                        "estimate_path": output_path,
+                        "request": request,
+                        "row": row,
+                        "result_key": result_key,
+                    })
+
+                except Exception as error:
+                    self.transcription_fail_count += 1
+
+                    self.update_result_row(
+                        result_key=result_key,
+                        request_no=request_no,
+                        estimate_no="",
+                        result_text=self.RESULT_FAILED,
+                        detail=(
+                            f"見積書作成失敗：{file_name}"
+                            f"（{request_no}）\n"
+                            f"{error}"
+                        ),
+                    )
+
         return jobs
+
+    # =====================================
+    # 出力ファイル名の無害化
+    # （見積依頼番号ベース）
+    # =====================================
+    def sanitize_file_name(
+        self,
+        request_no: str,
+    ) -> str:
+
+        return re.sub(
+            r'[\\/:*?"<>|]',
+            "_",
+            request_no,
+        )
 
     # =====================================
     # 出力パス
@@ -1092,10 +1097,6 @@ class MsrTab(QWidget):
         )
 
         self.ledger_thread.start()
-
-    # =====================================
-    # 中止
-    # =====================================
     def cancel_processing(self) -> None:
 
         if not self.processing:
@@ -1295,12 +1296,24 @@ class MsrTab(QWidget):
             f"{ledger_summary}）"
         )
 
-        QMessageBox.information(
-            self,
-            "完了",
-            "一括処理が終了しました。\n\n"
-            f"{transcription_summary}\n"
-            f"{ledger_summary}",
+        counts = self.get_result_counts()
+
+        CustomMessageDialog.summary(
+            parent=self,
+            title="処理完了",
+            heading="MSRの一括処理が完了しました",
+            sections=[
+                (
+                    "MSR",
+                    {
+                        "処理対象": counts["total"],
+                        "処理済み": counts["processed"],
+                        "成功": counts["success"],
+                        "NG": counts["ng"],
+                        "失敗": counts["failed"],
+                    },
+                ),
+            ],
         )
 
     def on_ledger_update_cancelled(

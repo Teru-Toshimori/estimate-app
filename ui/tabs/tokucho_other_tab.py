@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QTableWidget,
@@ -18,6 +17,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.custom_message_dialog import (
+    CustomMessageDialog,
+    DialogType,
+)
 from ui.device_login_dialog import DeviceLoginDialog
 from workers.tokucho_other_batch_worker import (
     TokuchoOtherBatchWorker,
@@ -26,7 +29,7 @@ from workers.tokucho_other_batch_worker import (
 
 class TokuchoOtherTab(QWidget):
     """
-    特調TB以外向けの見積書一括作成タブ。
+    特調以外TB向けの見積書一括作成タブ。
 
     共通入力値はMainWindowから取得する。
     """
@@ -71,7 +74,7 @@ class TokuchoOtherTab(QWidget):
         )
 
         title_label = QLabel(
-            "特調TB以外 見積書一括作成"
+            "特調以外TB 見積書一括作成"
         )
 
         title_label.setStyleSheet(
@@ -218,6 +221,18 @@ class TokuchoOtherTab(QWidget):
             QTableWidget.SelectionMode.SingleSelection
         )
 
+        self.result_table.setMinimumHeight(
+            250
+        )
+
+        self.result_table.setAlternatingRowColors(
+            False
+        )
+
+        self.result_table.setShowGrid(
+            True
+        )
+
         self.result_table.verticalHeader().setVisible(
             False
         )
@@ -238,7 +253,12 @@ class TokuchoOtherTab(QWidget):
 
         table_header.setSectionResizeMode(
             2,
-            QHeaderView.ResizeMode.ResizeToContents,
+            QHeaderView.ResizeMode.Fixed,
+        )
+
+        self.result_table.setColumnWidth(
+            2,
+            80,
         )
 
         main_layout.addWidget(
@@ -290,10 +310,14 @@ class TokuchoOtherTab(QWidget):
             self.batch_thread is not None
             and self.batch_thread.isRunning()
         ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "現在、一括処理を実行中です。",
+            CustomMessageDialog.warning(
+                parent=self,
+                title="処理中",
+                heading="一括処理を実行中です",
+                message=(
+                    "現在の処理が完了するまで"
+                    "お待ちください。"
+                ),
             )
             return
 
@@ -340,34 +364,33 @@ class TokuchoOtherTab(QWidget):
         )
 
         if not pdf_files:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "選択した業務計画書フォルダに"
-                "PDFファイルがありません。",
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="PDFファイルが見つかりません",
+                message=(
+                    "選択した業務計画書フォルダに"
+                    "PDFファイルがありません。"
+                ),
             )
             return
 
-        confirmation = QMessageBox.question(
-            self,
-            "一括実行の確認",
-            f"{len(pdf_files)}件のPDFを処理します。\n\n"
-            f"業務計画書フォルダ：\n{pdf_folder}\n\n"
-            f"管理台帳URL：\n{share_url}\n\n"
-            f"利用者一覧URL：\n{user_master_url}\n\n"
-            f"出力フォルダ：\n{output_folder}\n\n"
-            "実行してよろしいですか？",
-            (
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No
+        confirmed = CustomMessageDialog.confirm(
+            parent=self,
+            title="一括実行の確認",
+            heading="特調以外TBの一括処理を開始します",
+            message=(
+                f"対象ファイル：{len(pdf_files)}件\n\n"
+                "以下の処理を実行します。\n\n"
+                "✓ 見積書作成\n"
+                "✓ 管理台帳更新\n"
+                "✓ 見積／請求番号反映"
             ),
-            QMessageBox.StandardButton.No,
+            confirm_text="実行",
+            cancel_text="キャンセル",
         )
 
-        if (
-            confirmation
-            != QMessageBox.StandardButton.Yes
-        ):
+        if not confirmed:
             return
 
         self.clear_results()
@@ -391,11 +414,14 @@ class TokuchoOtherTab(QWidget):
     ) -> bool:
 
         if not pdf_folder:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "画面上部で業務計画書フォルダを"
-                "選択してください。",
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="業務計画書フォルダが未選択です",
+                message=(
+                    "画面上部で業務計画書フォルダを"
+                    "選択してください。"
+                ),
             )
             return False
 
@@ -404,43 +430,51 @@ class TokuchoOtherTab(QWidget):
         )
 
         if not pdf_folder_path.is_dir():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "業務計画書フォルダが"
-                "見つかりません。\n\n"
-                f"{pdf_folder}",
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="業務計画書フォルダが見つかりません",
+                message=pdf_folder,
             )
             return False
 
         if not self.is_valid_url(
             share_url
         ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "管理台帳URLを正しく"
-                "入力してください。",
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="管理台帳URLを確認してください",
+                message=(
+                    "管理台帳URLが未入力、または"
+                    "URLの形式が正しくありません。"
+                ),
             )
             return False
 
         if not self.is_valid_url(
             user_master_url
         ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "利用者一覧URLを正しく"
-                "入力してください。",
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="利用者一覧URLを確認してください",
+                message=(
+                    "利用者一覧URLが未入力、または"
+                    "URLの形式が正しくありません。"
+                ),
             )
             return False
 
         if not output_folder:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "画面上部で出力フォルダを"
-                "選択してください。",
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="出力フォルダが未選択です",
+                message=(
+                    "画面上部で出力フォルダを"
+                    "選択してください。"
+                ),
             )
             return False
 
@@ -449,12 +483,11 @@ class TokuchoOtherTab(QWidget):
         )
 
         if not output_folder_path.is_dir():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "出力フォルダが"
-                "見つかりません。\n\n"
-                f"{output_folder}",
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="出力フォルダが見つかりません",
+                message=output_folder,
             )
             return False
 
@@ -580,23 +613,19 @@ class TokuchoOtherTab(QWidget):
         if self.batch_worker is None:
             return
 
-        confirmation = QMessageBox.question(
-            self,
-            "処理中止の確認",
-            "一括処理を中止しますか？\n\n"
-            "現在処理中のPDFが完了したあとで"
-            "停止します。",
-            (
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No
+        confirmed = CustomMessageDialog.confirm(
+            parent=self,
+            title="処理中止の確認",
+            heading="一括処理を中止しますか？",
+            message=(
+                "現在処理中のPDFが完了したあとで"
+                "処理を停止します。"
             ),
-            QMessageBox.StandardButton.No,
+            confirm_text="中止する",
+            cancel_text="処理を続ける",
         )
 
-        if (
-            confirmation
-            != QMessageBox.StandardButton.Yes
-        ):
+        if not confirmed:
             return
 
         self.batch_worker.cancel()
@@ -755,14 +784,35 @@ class TokuchoOtherTab(QWidget):
                 "一括処理が完了しました。"
             )
 
-        QMessageBox.information(
-            self,
-            title,
-            f"処理対象：{total}件\n"
-            f"処理済み：{processed}件\n"
-            f"成功：{success}件\n"
-            f"NG：{ng}件\n"
-            f"失敗：{failed}件",
+        CustomMessageDialog.summary(
+            parent=self,
+            title=(
+                "処理中止"
+                if cancelled
+                else "処理完了"
+            ),
+            heading=(
+                "一括処理を中止しました"
+                if cancelled
+                else "一括処理が完了しました"
+            ),
+            sections=[
+                (
+                    "特調以外TB",
+                    {
+                        "処理対象": total,
+                        "処理済み": processed,
+                        "成功": success,
+                        "NG": ng,
+                        "失敗": failed,
+                    },
+                ),
+            ],
+            dialog_type=(
+                DialogType.WARNING
+                if cancelled
+                else DialogType.SUCCESS
+            ),
         )
 
     # =====================================
@@ -781,10 +831,11 @@ class TokuchoOtherTab(QWidget):
             "現在のファイル：処理停止"
         )
 
-        QMessageBox.critical(
-            self,
-            "エラー",
-            error_message,
+        CustomMessageDialog.error(
+            parent=self,
+            title="処理失敗",
+            heading="一括処理に失敗しました",
+            message=error_message,
         )
 
     # =====================================
@@ -818,10 +869,11 @@ class TokuchoOtherTab(QWidget):
             f"{result.get('message', '') or '詳細情報なし'}"
         )
 
-        QMessageBox.information(
-            self,
-            "処理結果詳細",
-            detail_message,
+        CustomMessageDialog.information(
+            parent=self,
+            title="処理結果詳細",
+            heading="選択した処理結果の詳細",
+            message=detail_message,
         )
 
     # =====================================

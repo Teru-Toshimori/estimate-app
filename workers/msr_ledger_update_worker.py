@@ -3,9 +3,9 @@ import threading
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from services.msr_ledger_writer import MsrLedgerWriter
-from services.onedrive_service import OneDriveService
-from services.user_master_reader import UserMasterReader
+from services.writers.msr_ledger_writer import MsrLedgerWriter
+from services.cloud.onedrive_service import OneDriveService
+from services.readers.user_master_reader import UserMasterReader
 
 
 class MsrLedgerUpdateWorker(QObject):
@@ -143,6 +143,7 @@ class MsrLedgerUpdateWorker(QObject):
                             job["estimate_path"]
                         ),
                         request=job["request"],
+                        row=job["row"],
                         issuer_name=issuer_name,
                     )
 

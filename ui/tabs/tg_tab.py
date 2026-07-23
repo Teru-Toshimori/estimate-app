@@ -1,263 +1,492 @@
+import os
 from collections.abc import Callable
 from pathlib import Path
 
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
+    QAbstractItemView, QHeaderView, QHBoxLayout, QLabel,
+    QPushButton, QProgressBar, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
+
+from ui.custom_message_dialog import (
+    CustomMessageDialog,
+    DialogType,
+)
+from ui.device_login_dialog import DeviceLoginDialog
+from workers.tg_batch_worker import TgBatchWorker
 
 
 class TgTab(QWidget):
-    """
-    TG向けタブ。
+    """TG見積書のPDF解析・台帳記入・Excel/PDF出力を一括実行する。"""
 
-    PDFフォルダ、管理台帳URL、出力フォルダは、
-    MainWindowに配置した共通入力欄から取得する。
+    RESULT_SUCCESS = "成功"
+    RESULT_NG = "NG"
+    RESULT_FAILED = "失敗"
 
-    現段階では、共通入力を正しく取得できるか
-    確認する機能まで実装する。
-    """
+    COL_REQUEST_NO = 0
+    COL_ESTIMATE_NO = 1
+    COL_RESULT = 2
 
-    def __init__(
-        self,
-        input_provider: Callable[[], dict],
-        parent=None,
-    ):
+    device_login_requested = Signal(dict)
+
+    def __init__(self, input_provider: Callable[[], dict] | None = None, parent=None):
         super().__init__(parent)
-
-        # MainWindowの共通入力取得メソッド
         self.input_provider = input_provider
-
+        self.worker_thread: QThread | None = None
+        self.worker: TgBatchWorker | None = None
+        self.processing = False
         self.setup_ui()
+        self.device_login_requested.connect(self.show_device_login)
 
-    # =====================================
-    # 画面作成
-    # =====================================
     def setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
-        main_layout = QVBoxLayout(self)
+        title = QLabel("TG 見積書一括作成")
+        title.setStyleSheet("font-size:18px;font-weight:bold;")
+        layout.addWidget(title)
 
-        main_layout.setContentsMargins(
-            12,
-            12,
-            12,
-            12,
-        )
-
-        main_layout.setSpacing(8)
-
-        # =====================================
-        # タイトル
-        # =====================================
-        title_label = QLabel(
-            "TG"
-        )
-
-        title_label.setStyleSheet(
-            "font-size: 18px;"
-            "font-weight: bold;"
-        )
-
-        main_layout.addWidget(
-            title_label
-        )
-
-        # =====================================
-        # 説明
-        # =====================================
-        description_label = QLabel(
+        description = QLabel(
             "画面上部の共通入力欄に指定された"
-            "業務計画書フォルダ、管理台帳URL、"
-            "出力フォルダを使用します。\n\n"
-            "TG向けの個別処理は、"
-            "次の工程で実装します。"
+            "入力フォルダ、管理台帳URL、"
+            "利用者一覧URL、出力フォルダを"
+            "使用して一括処理します。"
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.execute_button = QPushButton("一括実行")
+        self.execute_button.setMinimumHeight(42)
+        self.cancel_button = QPushButton("処理を中止")
+        self.cancel_button.setMinimumHeight(42)
+        self.cancel_button.setEnabled(False)
+
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.execute_button)
+        buttons.addWidget(self.cancel_button)
+        layout.addLayout(buttons)
+
+        self.progress_label = QLabel("処理進捗：0 / 0件")
+        layout.addWidget(self.progress_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+        layout.addWidget(self.progress_bar)
+
+        self.current_file_label = QLabel("現在のファイル：なし")
+        self.current_file_label.setStyleSheet("color:#555;")
+        layout.addWidget(self.current_file_label)
+
+        result_title = QLabel("処理結果")
+        result_title.setStyleSheet("font-size:15px;font-weight:bold;")
+        layout.addWidget(result_title)
+
+        self.result_table = QTableWidget(0, 3)
+        self.result_table.setHorizontalHeaderLabels([
+            "見積依頼番号", "見積/請求番号", "結果"
+        ])
+        
+        self.result_table.setMinimumHeight(250)
+
+        self.result_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
         )
 
-        description_label.setWordWrap(
-            True
+        self.result_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
         )
 
-        main_layout.addWidget(
-            description_label
+        self.result_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
         )
 
-        # =====================================
-        # 共通入力確認ボタン
-        # =====================================
-        self.confirm_button = QPushButton(
-            "共通入力を確認"
-        )
+        self.result_table.setAlternatingRowColors(False)
+        self.result_table.setShowGrid(True)
+        self.result_table.verticalHeader().setVisible(False)
 
-        self.confirm_button.setMinimumHeight(
-            42
-        )
+        header = self.result_table.horizontalHeader()
+        header.setSectionResizeMode(self.COL_REQUEST_NO, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(self.COL_ESTIMATE_NO, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(self.COL_RESULT, QHeaderView.ResizeMode.Fixed)
+        self.result_table.setColumnWidth(self.COL_RESULT, 80)
+        layout.addWidget(self.result_table, stretch=1)
 
-        self.confirm_button.clicked.connect(
-            self.confirm_common_inputs
-        )
+        self.summary_label = QLabel("処理件数：0件　成功：0件　NG：0件　失敗：0件")
+        layout.addWidget(self.summary_label)
 
-        main_layout.addWidget(
-            self.confirm_button
-        )
+        self.status_label = QLabel("待機中")
+        self.status_label.setStyleSheet("color:#555;")
+        layout.addWidget(self.status_label)
 
-        main_layout.addStretch()
+        self.execute_button.clicked.connect(self.execute_all)
+        self.cancel_button.clicked.connect(self.cancel_processing)
 
-    # =====================================
-    # 共通入力確認
-    # =====================================
-    def confirm_common_inputs(self) -> None:
+    def get_common_inputs(self) -> dict:
+        if not callable(self.input_provider):
+            return {"input_folder": "", "output_folder": "", "share_url": "", "user_master_url": ""}
+        values = self.input_provider() or {}
+        return {
+            "input_folder": str(values.get("input_folder", values.get("pdf_folder", "")) or "").strip(),
+            "output_folder": str(values.get("output_folder", "") or "").strip(),
+            "share_url": str(values.get("share_url", "") or "").strip(),
+            "user_master_url": str(values.get("user_master_url", "") or "").strip(),
+        }
 
-        inputs = self.input_provider()
+    def execute_all(self) -> None:
+        if self.processing:
+            return
 
-        pdf_folder = str(
-            inputs.get(
-                "pdf_folder",
-                "",
-            )
-        ).strip()
+        inputs = self.get_common_inputs()
+        input_folder = inputs["input_folder"]
+        output_folder = inputs["output_folder"]
+        share_url = inputs["share_url"]
+        user_master_url = inputs["user_master_url"]
 
-        share_url = str(
-            inputs.get(
-                "share_url",
-                "",
-            )
-        ).strip()
+        if not self.validate_inputs(input_folder, output_folder, share_url, user_master_url):
+            return
 
-        output_folder = str(
-            inputs.get(
-                "output_folder",
-                "",
-            )
-        ).strip()
-
-        # =====================================
-        # 入力チェック
-        # =====================================
-        if not pdf_folder:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "画面上部で業務計画書フォルダを"
-                "選択してください。",
+        pdf_files = sorted(Path(input_folder).glob("*.pdf"))
+        if not pdf_files:
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="PDFファイルが見つかりません",
+                message=(
+                    "選択した入力フォルダに"
+                    "PDFファイルがありません。"
+                ),
             )
             return
 
-        pdf_folder_path = Path(
-            pdf_folder
+        confirmed = CustomMessageDialog.confirm(
+            parent=self,
+            title="一括実行の確認",
+            heading="TGの一括処理を開始します",
+            message=(
+                f"対象ファイル：{len(pdf_files)}件\n\n"
+                "以下の処理を実行します。\n\n"
+                "✓ PDF解析\n"
+                "✓ 管理台帳更新\n"
+                "✓ Excel・PDF出力"
+            ),
+            confirm_text="実行",
+            cancel_text="キャンセル",
         )
 
-        if not pdf_folder_path.exists():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "指定された業務計画書フォルダが"
-                "見つかりません。\n\n"
-                f"{pdf_folder}",
-            )
+        if not confirmed:
             return
 
-        if not pdf_folder_path.is_dir():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "業務計画書フォルダには"
-                "フォルダを指定してください。",
-            )
-            return
+        self.clear_results()
+        self.set_processing_state(True)
+        self.update_progress(0, len(pdf_files), "処理を準備中")
+        self.status_label.setText("TG一括処理を開始します...")
 
-        if not share_url:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "画面上部で管理台帳URLを"
-                "入力してください。",
-            )
-            return
+        self.worker_thread = QThread(self)
+        self.worker = TgBatchWorker(
+            pdf_files=pdf_files,
+            input_folder=input_folder,
+            output_folder=output_folder,
+            share_url=share_url,
+            user_master_url=user_master_url,
+            device_flow_callback=lambda flow: self.device_login_requested.emit(flow),
+        )
+        self.worker.moveToThread(self.worker_thread)
+        self.worker_thread.started.connect(self.worker.run)
+        self.worker.item_finished.connect(self.on_item_finished)
+        self.worker.progress.connect(self.status_label.setText)
+        self.worker.progress_count.connect(self.update_progress)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.cancelled.connect(self.on_cancelled)
+        self.worker.failed.connect(self.on_failed)
+        self.worker.finished.connect(self.worker_thread.quit)
+        self.worker.cancelled.connect(self.worker_thread.quit)
+        self.worker.failed.connect(self.worker_thread.quit)
+        self.worker_thread.finished.connect(self.cleanup_worker)
+        self.worker_thread.start()
 
-        if not share_url.startswith(
-            (
-                "https://",
-                "http://",
+    def validate_inputs(
+        self,
+        input_folder: str,
+        output_folder: str,
+        share_url: str,
+        user_master_url: str,
+    ) -> bool:
+        if not input_folder or not os.path.isdir(input_folder):
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="入力フォルダを確認してください",
+                message=(
+                    "共通入力の入力フォルダが未選択、"
+                    "またはフォルダが見つかりません。"
+                ),
             )
-        ):
-            QMessageBox.warning(
-                self,
-                "確認",
-                "管理台帳URLの形式が"
-                "正しくありません。",
-            )
-            return
-
+            return False
         if not output_folder:
-            QMessageBox.warning(
-                self,
-                "確認",
-                "画面上部で出力フォルダを"
-                "選択してください。",
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="出力フォルダが未選択です",
+                message=(
+                    "画面上部で出力フォルダを"
+                    "選択してください。"
+                ),
             )
-            return
-
-        output_folder_path = Path(
-            output_folder
-        )
-
-        if not output_folder_path.exists():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "指定された出力フォルダが"
-                "見つかりません。\n\n"
-                f"{output_folder}",
+            return False
+        try:
+            os.makedirs(output_folder, exist_ok=True)
+        except OSError as error:
+            CustomMessageDialog.error(
+                parent=self,
+                title="フォルダ作成エラー",
+                heading="出力フォルダを作成できません",
+                message=str(error),
             )
-            return
-
-        if not output_folder_path.is_dir():
-            QMessageBox.warning(
-                self,
-                "確認",
-                "出力フォルダには"
-                "フォルダを指定してください。",
+            return False
+        if not share_url or not share_url.startswith(("https://", "http://")):
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="管理台帳URLを確認してください",
+                message=(
+                    "管理台帳URLが未入力、または"
+                    "URLの形式が正しくありません。"
+                ),
             )
-            return
-
-        # =====================================
-        # PDF件数取得
-        # =====================================
-        pdf_files = [
-            path
-            for path in pdf_folder_path.iterdir()
-            if (
-                path.is_file()
-                and path.suffix.lower()
-                == ".pdf"
+            return False
+        if not user_master_url:
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="利用者一覧URLが未入力です",
+                message=(
+                    "画面上部で利用者一覧URLを"
+                    "入力してください。"
+                ),
             )
-        ]
-
-        pdf_count = len(
-            pdf_files
-        )
-
-        # =====================================
-        # 確認表示
-        # =====================================
-        QMessageBox.information(
-            self,
-            "共通入力確認",
-            "TGタブで共通入力を取得しました。\n\n"
-            f"業務計画書フォルダ：\n"
-            f"{pdf_folder}\n\n"
-            f"PDF件数：{pdf_count}件\n\n"
-            f"管理台帳URL：\n"
-            f"{share_url}\n\n"
-            f"出力フォルダ：\n"
-            f"{output_folder}",
-        )
-
-    # =====================================
-    # アプリ終了可能判定
-    # =====================================
-    def can_close(self) -> bool:
+            return False
+        if not user_master_url.startswith(("https://", "http://")):
+            CustomMessageDialog.warning(
+                parent=self,
+                title="入力内容の確認",
+                heading="利用者一覧URLを確認してください",
+                message="利用者一覧URLの形式が正しくありません。",
+            )
+            return False
         return True
+
+    def cancel_processing(self) -> None:
+        if self.worker is None:
+            return
+
+        confirmed = CustomMessageDialog.confirm(
+            parent=self,
+            title="処理中止の確認",
+            heading="TGの一括処理を中止しますか？",
+            message=(
+                "現在処理中のPDFが完了したあとで"
+                "処理を停止します。"
+            ),
+            confirm_text="中止する",
+            cancel_text="処理を続ける",
+        )
+
+        if not confirmed:
+            return
+
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("中止要求済み")
+        self.status_label.setText("中止要求を受け付けました...")
+        self.worker.request_cancel()
+
+    def on_item_finished(self, result: dict) -> None:
+        self.add_result_row(
+            result.get("request_no", ""), result.get("estimate_no", ""),
+            result.get("result", self.RESULT_FAILED), result.get("detail", ""),
+        )
+
+    def on_finished(self, summary: dict) -> None:
+        self.set_processing_state(False)
+
+        total = int(summary.get("total", 0))
+        processed = int(
+            summary.get(
+                "processed",
+                (
+                    int(summary.get("success", 0))
+                    + int(summary.get("ng", 0))
+                    + int(summary.get("failed", 0))
+                ),
+            )
+        )
+        success = int(summary.get("success", 0))
+        ng = int(summary.get("ng", 0))
+        failed = int(summary.get("failed", 0))
+
+        self.update_progress(
+            processed,
+            total,
+            "完了",
+        )
+        self.status_label.setText(
+            "TG一括処理が完了しました。"
+        )
+
+        CustomMessageDialog.summary(
+            parent=self,
+            title="処理完了",
+            heading="TGの一括処理が完了しました",
+            sections=[
+                (
+                    "TG",
+                    {
+                        "処理対象": total,
+                        "処理済み": processed,
+                        "成功": success,
+                        "NG": ng,
+                        "失敗": failed,
+                    },
+                ),
+            ],
+            dialog_type=DialogType.SUCCESS,
+        )
+
+    def on_cancelled(self, summary: dict) -> None:
+        self.set_processing_state(False)
+
+        total = int(summary.get("total", 0))
+        processed = int(
+            summary.get(
+                "processed",
+                (
+                    int(summary.get("success", 0))
+                    + int(summary.get("ng", 0))
+                    + int(summary.get("failed", 0))
+                ),
+            )
+        )
+        success = int(summary.get("success", 0))
+        ng = int(summary.get("ng", 0))
+        failed = int(summary.get("failed", 0))
+
+        self.update_progress(
+            processed,
+            total,
+            "処理中止",
+        )
+        self.status_label.setText(
+            "TG一括処理を中止しました。"
+        )
+
+        CustomMessageDialog.summary(
+            parent=self,
+            title="処理中止",
+            heading="TGの一括処理を中止しました",
+            sections=[
+                (
+                    "TG",
+                    {
+                        "処理対象": total,
+                        "処理済み": processed,
+                        "成功": success,
+                        "NG": ng,
+                        "失敗": failed,
+                    },
+                ),
+            ],
+            dialog_type=DialogType.WARNING,
+        )
+
+    def on_failed(self, message: str) -> None:
+        self.set_processing_state(False)
+        self.status_label.setText(
+            "TG一括処理に失敗しました。"
+        )
+
+        CustomMessageDialog.error(
+            parent=self,
+            title="処理失敗",
+            heading="TGの一括処理に失敗しました",
+            message=message,
+        )
+
+    def cleanup_worker(self) -> None:
+        if self.worker is not None:
+            self.worker.deleteLater()
+        if self.worker_thread is not None:
+            self.worker_thread.deleteLater()
+        self.worker = None
+        self.worker_thread = None
+
+    def set_processing_state(self, processing: bool) -> None:
+        self.processing = processing
+        self.execute_button.setEnabled(not processing)
+        self.cancel_button.setEnabled(processing)
+
+        if not processing:
+            self.cancel_button.setText(
+                "処理を中止"
+            )
+
+    def update_progress(self, current: int, total: int, file_name: str = "") -> None:
+        safe_total = max(total, 1)
+        self.progress_bar.setRange(0, safe_total)
+        self.progress_bar.setValue(min(max(current, 0), safe_total))
+        self.progress_label.setText(f"処理進捗：{current} / {total}件")
+        self.current_file_label.setText(f"現在のファイル：{file_name or 'なし'}")
+
+    def clear_results(self) -> None:
+        self.result_table.setRowCount(0)
+        self.update_summary()
+
+    def add_result_row(self, request_no: str, estimate_no: str, result_text: str, detail: str = "") -> None:
+        row = self.result_table.rowCount()
+        self.result_table.insertRow(row)
+        for column, value in enumerate(
+            [request_no, estimate_no, result_text]
+        ):
+            item = QTableWidgetItem(
+                str(value or "")
+            )
+
+            # 「結果」列のみ中央揃え
+            if column == self.COL_RESULT:
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignCenter
+                )
+
+            if detail:
+                item.setToolTip(detail)
+
+            self.result_table.setItem(
+                row,
+                column,
+                item,
+            )
+        self.update_summary()
+
+    def update_summary(self) -> None:
+        total = self.result_table.rowCount()
+        success = ng = failed = 0
+        for row in range(total):
+            item = self.result_table.item(row, self.COL_RESULT)
+            result = item.text().strip() if item else ""
+            if result == self.RESULT_SUCCESS:
+                success += 1
+            elif result == self.RESULT_NG:
+                ng += 1
+            elif result == self.RESULT_FAILED:
+                failed += 1
+        self.summary_label.setText(
+            f"処理件数：{total}件　成功：{success}件　NG：{ng}件　失敗：{failed}件"
+        )
+
+    def show_device_login(self, flow: dict) -> None:
+        DeviceLoginDialog(flow=flow, parent=self).exec()
+
+    def can_close(self) -> bool:
+        return not (self.worker_thread is not None and self.worker_thread.isRunning())
