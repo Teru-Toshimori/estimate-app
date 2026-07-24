@@ -6,14 +6,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from services.template_resolver import TemplateResolver
-from services.excel_writer import ExcelWriter
-from services.ledger_writer import (
+from services.excel.template_resolver import TemplateResolver
+from services.writers.estimate_excel_writer import ExcelWriter
+from services.writers.tokucho_tb_ledger_writer import (
     DuplicateApplicationNoError,
     LedgerWriter,
 )
-from services.onedrive_service import OneDriveService
-from services.pdf_reader import PDFReader
+from services.cloud.onedrive_service import OneDriveService
+from services.readers.pdf_reader import PDFReader
 
 
 class BatchEstimateWorker(QObject):
@@ -216,7 +216,7 @@ class BatchEstimateWorker(QObject):
                     output_pdf_path,
                 ) = self.create_unique_output_paths(
                     file_name_base=(
-                        f"「見積書」{voucher_no}"
+                        f"【見積書】{voucher_no}"
                     )
                 )
 
@@ -781,9 +781,9 @@ class BatchEstimateWorker(QObject):
         元ファイルを残したまま連番付きの出力パスを返す。
 
         例:
-            「見積書」ITK14642.xlsx
-            「見積書」ITK14642_2.xlsx
-            「見積書」ITK14642_3.xlsx
+            【見積書】404-2400-0000-000.xlsx
+            【見積書】404-2400-0000-000_2.xlsx
+            【見積書】404-2400-0000-000_3.xlsx
         """
 
         candidate = file_name_base

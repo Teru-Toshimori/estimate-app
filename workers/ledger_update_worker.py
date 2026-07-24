@@ -1,7 +1,7 @@
 from PySide6.QtCore import QObject, Signal, Slot
 
-from services.ledger_writer import LedgerWriter
-from services.onedrive_service import OneDriveService
+from services.writers.tokucho_tb_ledger_writer import LedgerWriter
+from services.cloud.onedrive_service import OneDriveService
 
 
 class LedgerUpdateWorker(QObject):

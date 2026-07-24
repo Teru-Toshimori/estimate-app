@@ -34,7 +34,7 @@ class MainWindow(QMainWindow):
 
     タブ:
         ・特調TB
-        ・特調TB以外
+        ・特調以外TB
         ・TG
         ・MSR
     """
@@ -384,7 +384,7 @@ class MainWindow(QMainWindow):
 
         self.tab_widget.addTab(
             self.tokucho_other_tab,
-            "特調TB以外",
+            "特調以外TB",
         )
 
         self.tab_widget.addTab(
@@ -661,34 +661,28 @@ class MainWindow(QMainWindow):
     # =====================================
     # アプリ終了処理
     # =====================================
-    def closeEvent(
-        self,
-        event,
-    ) -> None:
+    def closeEvent(self, event):
+        """
+        アプリ終了時
+
+        いずれかのタブで処理中なら終了しない。
+        """
 
         tabs = [
-            self.tokucho_tb_tab,
-            self.tokucho_other_tab,
-            self.tg_tab,
-            self.msr_tab,
+            ("特調TB", self.tokucho_tb_tab),
+            ("TG", self.tg_tab),
+            ("MSR", self.msr_tab),
         ]
 
-        for tab in tabs:
-            can_close_method = getattr(
-                tab,
-                "can_close",
-                None,
-            )
+        for tab_name, tab in tabs:
 
-            if (
-                callable(can_close_method)
-                and not can_close_method()
-            ):
+            if hasattr(tab, "can_close") and not tab.can_close():
+
                 QMessageBox.warning(
                     self,
-                    "処理中",
-                    "現在処理を実行中のため、"
-                    "アプリを終了できません。",
+                    "確認",
+                    f"{tab_name}タブで処理中のため、"
+                    "アプリを終了できません。"
                 )
 
                 event.ignore()
