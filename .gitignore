@@ -1,18 +1,34 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
 
+# Claude
 .claude/
 
+# PyInstaller
 build/
 *.spec
 
+# 出力ファイル（実行結果）
 output/
-*.xlsx
-*.xls
-*.pdf
+output/**/*.xlsx
+output/**/*.xls
+output/**/*.pdf
 
+# Microsoft Graph
 config/graph_config.py
 token_cache.bin
 
+# 空フォルダ保持
 !resources/.gitkeep
+
+# --------------------------------------------------
+# 配布用テンプレートはGitで管理する
+# --------------------------------------------------
+!dist/
+!dist/EstimateTool/
+!dist/EstimateTool/resources/
+!dist/EstimateTool/resources/**
+!dist/EstimateTool/resources/**/*.xlsx
+!dist/EstimateTool/resources/**/*.xls
