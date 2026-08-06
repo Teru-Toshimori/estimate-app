@@ -40,7 +40,7 @@ class LedgerWriter:
         C列：部署名
         D列：見積／請求番号
         F列：業務計画書No
-        G列：車種コード
+        G列：案件名
         H列：委託金額
         I列：見積月
         J列：発行日
@@ -48,6 +48,9 @@ class LedgerWriter:
 
     採番前に、管理台帳の全シートを対象として
     F列に同じ業務計画書Noが存在しないか確認する。
+
+    D列の見積／請求番号が未入力の場合は、
+    対象シートのD列最大値に1を加算して自動採番する。
     """
 
     def write(
@@ -156,7 +159,12 @@ class LedgerWriter:
                 )
 
             # =====================================
-            # あらかじめ採番済みの未使用行を検索
+            # あらかじめ用意された未使用行を検索
+            #
+            # B列：Noあり
+            # F列：業務委託計画書Noが空欄
+            #
+            # D列が空欄でも未使用行として使用する。
             # =====================================
             available_row = self.find_available_row(
                 sheet
@@ -165,15 +173,10 @@ class LedgerWriter:
             if available_row is not None:
                 new_row = available_row
 
+                # B列：既存のNoを使用
                 new_no = self.to_int(
                     sheet[
                         f"B{new_row}"
-                    ].value
-                )
-
-                new_estimate_no = self.to_int(
-                    sheet[
-                        f"D{new_row}"
                     ].value
                 )
 
@@ -185,20 +188,42 @@ class LedgerWriter:
                         f"行番号：{new_row}"
                     )
 
+                # D列：見積／請求番号
+                new_estimate_no = self.to_int(
+                    sheet[
+                        f"D{new_row}"
+                    ].value
+                )
+
+                # D列が空欄の場合は、
+                # 対象シートのD列最大値＋1を自動採番する。
                 if new_estimate_no <= 0:
-                    raise ValueError(
-                        "未使用行の見積／請求番号を"
-                        "取得できませんでした。\n\n"
-                        f"シート：{sheet.title}\n"
-                        f"行番号：{new_row}"
+                    maximum_estimate_no = (
+                        self.find_max_number_in_column(
+                            sheet=sheet,
+                            column_letter="D",
+                        )
+                    )
+
+                    if maximum_estimate_no <= 0:
+                        raise ValueError(
+                            "見積／請求番号を"
+                            "自動採番できませんでした。\n\n"
+                            f"シート：{sheet.title}\n"
+                            "D列に採番の基準となる番号が"
+                            "見つかりません。"
+                        )
+
+                    new_estimate_no = (
+                        maximum_estimate_no + 1
                     )
 
                 used_preassigned_row = True
 
             else:
                 # =====================================
-                # 採番済みの未使用行がない場合は、
-                # 従来どおり最終行の下へ追加する。
+                # 未使用行がない場合は、
+                # 最終行の下へ新しい行を追加する。
                 # =====================================
                 last_row = self.find_last_row(
                     sheet
@@ -217,19 +242,9 @@ class LedgerWriter:
                     f"B{last_row}"
                 ].value
 
-                previous_estimate_no = sheet[
-                    f"D{last_row}"
-                ].value
-
+                # B列のNoは前行＋1
                 new_no = (
                     self.to_int(previous_no)
-                    + 1
-                )
-
-                new_estimate_no = (
-                    self.to_int(
-                        previous_estimate_no
-                    )
                     + 1
                 )
 
@@ -240,12 +255,27 @@ class LedgerWriter:
                         f"前行の値：{previous_no}"
                     )
 
-                if new_estimate_no <= 1:
+                # D列の見積／請求番号は、
+                # D列全体の最大値＋1を採番する。
+                maximum_estimate_no = (
+                    self.find_max_number_in_column(
+                        sheet=sheet,
+                        column_letter="D",
+                    )
+                )
+
+                if maximum_estimate_no <= 0:
                     raise ValueError(
                         "見積／請求番号を"
-                        "採番できませんでした。\n\n"
-                        f"前行の値：{previous_estimate_no}"
+                        "自動採番できませんでした。\n\n"
+                        f"シート：{sheet.title}\n"
+                        "D列に採番の基準となる番号が"
+                        "見つかりません。"
                     )
+
+                new_estimate_no = (
+                    maximum_estimate_no + 1
+                )
 
                 used_preassigned_row = False
 
@@ -311,7 +341,7 @@ class LedgerWriter:
             ] = new_estimate_no
 
             # F列：業務委託計画書No
-            # 番号がない帳票では空欄にする。
+            # 番号がない帳票では「-」を記入する。
             sheet[
                 f"F{new_row}"
             ] = (
@@ -320,10 +350,11 @@ class LedgerWriter:
                 else "-"
             )
 
-            # G列：車種コード
+            # G列：案件名
+            # PDFから取得した「件名」を記入する。
             sheet[
                 f"G{new_row}"
-            ] = data.model_code
+            ] = data.subject
 
             # H列：委託金額
             sheet[
@@ -446,7 +477,7 @@ class LedgerWriter:
             # 数値・日付の表示形式
             # =====================================
 
-            # F列：業務委託計画書Noがある場合のみ表示形式を設定
+            # F列：業務委託計画書No
             if application_number is not None:
                 sheet[
                     f"F{new_row}"
@@ -628,9 +659,7 @@ class LedgerWriter:
             return None
 
         for sheet in workbook.worksheets:
-
             for cell in sheet["C"]:
-
                 if cell.value is None:
                     continue
 
@@ -688,15 +717,18 @@ class LedgerWriter:
         return normalized
 
     # =====================================
-    # 採番済みの未使用行を取得
+    # 採番済み・未採番を含む未使用行を取得
     # =====================================
     def find_available_row(
         self,
         sheet,
     ) -> int | None:
         """
-        B列とD列に番号が用意されており、
+        B列にNoが用意されており、
         F列が空欄の最初の行を返す。
+
+        D列の見積／請求番号が空欄の場合は、
+        write()内で自動採番する。
 
         F列には使用済み案件の場合、
         業務委託計画書Noまたは「-」が入るため、
@@ -711,10 +743,6 @@ class LedgerWriter:
                 f"B{row_number}"
             ].value
 
-            estimate_no_value = sheet[
-                f"D{row_number}"
-            ].value
-
             application_no_value = sheet[
                 f"F{row_number}"
             ].value
@@ -723,27 +751,63 @@ class LedgerWriter:
                 no_value
             )
 
-            estimate_no_number = self.to_int(
-                estimate_no_value
-            )
-
             application_no_text = str(
                 application_no_value
                 or ""
             ).strip()
 
+            # B列のNoがない行は使用しない
             if no_number <= 0:
                 continue
 
-            if estimate_no_number <= 0:
-                continue
-
+            # F列に値がある行は使用済み
             if application_no_text:
                 continue
 
             return row_number
 
         return None
+
+    # =====================================
+    # 指定列の最大番号を取得
+    # =====================================
+    def find_max_number_in_column(
+        self,
+        sheet,
+        column_letter: str,
+    ) -> int:
+        """
+        指定列に入力されている値のうち、
+        数値として取得できる最大値を返す。
+
+        数値として取得できる値がない場合は0を返す。
+
+        例:
+            16104150
+            16104151
+            空欄
+            ↓
+            16104151
+        """
+
+        maximum_number = 0
+
+        for row_number in range(
+            1,
+            sheet.max_row + 1,
+        ):
+            cell_value = sheet[
+                f"{column_letter}{row_number}"
+            ].value
+
+            number = self.to_int(
+                cell_value
+            )
+
+            if number > maximum_number:
+                maximum_number = number
+
+        return maximum_number
 
     # =====================================
     # B列の最終データ行を取得
