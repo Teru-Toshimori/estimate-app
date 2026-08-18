@@ -72,7 +72,7 @@ class TokuchoOtherExcelWriter:
                 department=self.get_department(
                     data
                 ),
-                work_item=self.get_first_work_item(
+                work_item=self.get_subject(
                     data
                 ),
             )
