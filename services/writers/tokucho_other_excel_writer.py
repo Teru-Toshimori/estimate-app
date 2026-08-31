@@ -3,6 +3,7 @@ from pathlib import Path
 
 from services.excel.template_resolver import TemplateResolver
 from services.writers.estimate_excel_writer import ExcelWriter
+from services.text.work_item_shortener import WorkItemShortener
 
 
 class TokuchoOtherExcelWriter:
@@ -24,6 +25,7 @@ class TokuchoOtherExcelWriter:
 
     def __init__(self):
         self.excel_writer = ExcelWriter()
+        self.work_item_shortener = WorkItemShortener()
 
     # =====================================
     # Excel・PDF出力
@@ -185,10 +187,12 @@ class TokuchoOtherExcelWriter:
         """
         既存ExcelWriterで使用する属性名へ値を合わせる。
 
-        特調TB以外では、
-        業務委託計画書横の番号を
-        従来の伝票番号と同じC25へ転記するため、
-        voucher_noへ設定する。
+        特調以外TBの表示ルール:
+        ・各項目の1行目を基本表示名にする。
+        ・同じ1行目が複数ある場合だけ2行目を使って区別する。
+        ・2行目追加後も7行以内なら、2行目をNo.なしの継続行にする。
+        ・7行を超える場合は、重複項目だけ1行目+2行目を結合し、
+          WorkItemShortenerで1行表示にまとめる。
         """
 
         application_no = str(
@@ -200,25 +204,25 @@ class TokuchoOtherExcelWriter:
             or ""
         ).strip()
 
-        # 特調TB以外では伝票No.(B25)は使用しないため常に空欄にする。
         setattr(
             data,
             "voucher_no",
             "",
         )
 
-        # B26の申請書No.用として業務委託計画書Noを保持する。
-        # 値が存在しない場合は空欄のままとする。
         setattr(
             data,
             "application_no",
             application_no,
         )
 
-        # ExcelWriterがjob_titleを使う場合に備える
-        subject = self.get_subject(
-            data
+        setattr(
+            data,
+            "output_layout_mode",
+            "tokucho_other",
         )
+
+        subject = self.get_subject(data)
 
         if subject:
             setattr(
@@ -226,33 +230,153 @@ class TokuchoOtherExcelWriter:
                 "subject",
                 subject,
             )
-
             setattr(
                 data,
                 "job_title",
                 subject,
             )
 
-        # ExcelWriterがitemsまたはdeliverablesを
-        # 使用する場合に備えて両方へ設定
         work_items = self.get_work_items(
             data
+        )
+
+        second_lines = (
+            self.get_work_item_second_lines(
+                data=data,
+                item_count=len(work_items),
+            )
+        )
+
+        title_counts: dict[str, int] = {}
+
+        for title in work_items:
+            key = str(title).strip()
+            title_counts[key] = (
+                title_counts.get(key, 0)
+                + 1
+            )
+
+        duplicate_indexes = {
+            index
+            for index, title in enumerate(
+                work_items
+            )
+            if (
+                title_counts.get(
+                    str(title).strip(),
+                    0,
+                ) > 1
+                and index < len(second_lines)
+                and bool(second_lines[index])
+            )
+        }
+
+        required_rows = (
+            len(work_items)
+            + len(duplicate_indexes)
+        )
+
+        display_rows: list[dict] = []
+        display_outputs: list[str] = []
+
+        if required_rows <= 7:
+            # 空き行あり:
+            # 重複タイトルだけ2行目をNo.なしで追加。
+            for index, title in enumerate(
+                work_items
+            ):
+                title_text = (
+                    self.work_item_shortener
+                    .shorten(title)
+                )
+
+                display_rows.append(
+                    {
+                        "number": index + 1,
+                        "text": title_text,
+                    }
+                )
+                display_outputs.append(
+                    title_text
+                )
+
+                if index in duplicate_indexes:
+                    detail_text = (
+                        self.work_item_shortener
+                        .shorten(
+                            second_lines[index]
+                        )
+                    )
+
+                    if detail_text:
+                        display_rows.append(
+                            {
+                                "number": None,
+                                "text": detail_text,
+                            }
+                        )
+                        display_outputs.append(
+                            detail_text
+                        )
+
+        else:
+            # 7行を超える:
+            # 重複タイトルだけ2行目と結合して
+            # 区別できる1行名称にする。
+            for index, title in enumerate(
+                work_items
+            ):
+                source_text = str(
+                    title
+                ).strip()
+
+                if index in duplicate_indexes:
+                    source_text = (
+                        f"{source_text} "
+                        f"{second_lines[index]}"
+                    ).strip()
+
+                display_text = (
+                    self.work_item_shortener
+                    .shorten(
+                        source_text
+                    )
+                )
+
+                display_rows.append(
+                    {
+                        "number": index + 1,
+                        "text": display_text,
+                    }
+                )
+                display_outputs.append(
+                    display_text
+                )
+
+        setattr(
+            data,
+            "display_output_rows",
+            display_rows,
+        )
+
+        setattr(
+            data,
+            "display_outputs",
+            display_outputs,
         )
 
         setattr(
             data,
             "items",
-            work_items,
+            display_outputs,
         )
 
         setattr(
             data,
             "deliverables",
-            work_items,
+            display_outputs,
         )
 
-        # ExcelWriterがdue_dateまたはdeadlineを
-        # 使用する場合に備えて両方へ設定
         due_date = self.get_due_date(
             data
         )
@@ -263,12 +387,57 @@ class TokuchoOtherExcelWriter:
                 "due_date",
                 due_date,
             )
-
             setattr(
                 data,
                 "deadline",
                 due_date,
             )
+
+    def get_work_item_second_lines(
+        self,
+        data,
+        item_count: int,
+    ) -> list[str]:
+        """
+        Readerが保持した各項目の2行目を、
+        output_titlesと同じ件数・順序で返す。
+
+        空欄も位置合わせのため保持する。
+        """
+
+        values = getattr(
+            data,
+            "output_second_lines",
+            None,
+        )
+
+        if values is None:
+            values = []
+
+        if isinstance(values, str):
+            values = values.splitlines()
+
+        result = [
+            str(value).strip()
+            if value is not None
+            else ""
+            for value in values
+        ]
+
+        if len(result) < item_count:
+            result.extend(
+                [
+                    ""
+                    for _ in range(
+                        item_count
+                        - len(result)
+                    )
+                ]
+            )
+
+        return result[
+            :item_count
+        ]
 
     # =====================================
     # 出力ファイル名生成
@@ -438,9 +607,23 @@ class TokuchoOtherExcelWriter:
         self,
         data,
     ) -> list[str]:
+        """
+        見積書へ表示する作業項目一覧を取得する。
+
+        特調以外TBではReaderが生成した
+        output_titles（各作業項目の1行目）を最優先する。
+
+        output_titlesが存在しない既存データでは、
+        outputs / items / deliverables の順でフォールバックする。
+        """
 
         values = (
             getattr(
+                data,
+                "output_titles",
+                None,
+            )
+            or getattr(
                 data,
                 "outputs",
                 None,
@@ -468,6 +651,8 @@ class TokuchoOtherExcelWriter:
                 if line.strip()
             ]
 
+        # 同じ見出しが別項目として複数存在する場合があるため、
+        # 重複排除は行わず、元の順番と件数を維持する。
         return [
             str(value).strip()
             for value in values
@@ -482,8 +667,10 @@ class TokuchoOtherExcelWriter:
         data,
     ) -> str:
         """
-        ファイル名には、作業内容の
-        先頭項目を使用する。
+        作業内容の先頭項目を取得する。
+
+        現在のファイル名生成では件名を使用しているため、
+        主に互換用として残している。
         """
 
         work_items = self.get_work_items(
@@ -493,8 +680,6 @@ class TokuchoOtherExcelWriter:
         if work_items:
             return work_items[0]
 
-        # 作業項目が取得できない場合は、
-        # 件名を代替として使用する
         return self.get_subject(
             data
         )

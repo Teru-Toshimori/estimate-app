@@ -94,10 +94,75 @@ class TokuchoOtherPdfReader:
             or self.extract_application_no_from_text(text)
         )
 
-        outputs = (
-            self.extract_work_items_from_tables(tables)
-            or self.extract_work_items_from_text(text)
+        # 作業内容の全文とは別に、見積書表示用の「各項目の1行目」も保持する。
+        # extract_work_items_from_table() が表から取得できた場合は、
+        # 元PDFセル内の物理的な1行目を _last_work_item_titles へ保存する。
+        self._last_work_item_titles: list[str] = []
+        self._last_work_item_second_lines: list[str] = []
+
+        outputs = self.extract_work_items_from_tables(tables)
+
+        if not outputs:
+            outputs = self.extract_work_items_from_text(text)
+
+            # 全文テキスト解析へフォールバックした場合は、
+            # 各取得行そのものを見積書用タイトルとして使用する。
+            self._last_work_item_titles = [
+                self.clean_work_item(value)
+                for value in outputs
+                if self.clean_work_item(value)
+            ]
+            self._last_work_item_second_lines = [
+                ""
+                for _ in self._last_work_item_titles
+            ]
+
+        # 見積書表示用タイトルは、同じ文字列でも別項目として存在し得る。
+        # 例: 1番と3番がどちらも「設計問題点の調査、展開」。
+        # そのため重複排除は行わず、元の項目順・件数をそのまま保持する。
+        output_titles = self.nonempty_preserve_duplicates(
+            getattr(self, "_last_work_item_titles", [])
         )
+
+        # タイトル取得に失敗した場合でも従来処理を壊さない。
+        if not output_titles:
+            output_titles = [
+                self.clean_work_item(value)
+                for value in outputs
+                if self.clean_work_item(value)
+            ]
+
+        # 同名タイトルを区別する際に使用する各項目の2行目。
+        # 空欄も項目位置合わせのため保持する。
+        raw_second_lines = list(
+            getattr(
+                self,
+                "_last_work_item_second_lines",
+                [],
+            )
+            or []
+        )
+
+        output_second_lines = [
+            self.clean_work_item(value)
+            if value else ""
+            for value in raw_second_lines
+        ]
+
+        if len(output_second_lines) < len(output_titles):
+            output_second_lines.extend(
+                [
+                    ""
+                    for _ in range(
+                        len(output_titles)
+                        - len(output_second_lines)
+                    )
+                ]
+            )
+        elif len(output_second_lines) > len(output_titles):
+            output_second_lines = output_second_lines[
+                :len(output_titles)
+            ]
 
         amount = (
             self.extract_amount_from_table(main_table)
@@ -142,7 +207,15 @@ class TokuchoOtherPdfReader:
         data.department = department
         data.subject = subject
         data.application_no = application_no
+        # outputs      : 元PDFから取得した作業内容全文
+        # output_titles: 見積書へ表示する各作業項目の1行目
         data.outputs = outputs
+        setattr(data, "output_titles", output_titles)
+        setattr(
+            data,
+            "output_second_lines",
+            output_second_lines,
+        )
         data.amount = amount
         data.due_date = due_date
         data.model_code = model_code
@@ -1018,21 +1091,24 @@ class TokuchoOtherPdfReader:
         """
         「（参考）作業内容」欄の項目を取得する。
 
-        帳票によって、
-        ・「（参考）作業内容」が項目行より前にある
-        ・「（参考）作業内容」が項目行より後にある
-        ・予定列が「予定工数」または「予定金額」
-        などレイアウト差異があるため、
+        判定方針:
+        ・PDF上の改行だけでは別項目と判定しない。
+        ・表の行を基本単位とする。
+        ・①②③、1.、(1) などの項目番号があれば新規項目とする。
+        ・予定工数／予定金額が入っている行も新規項目とする。
+        ・項目番号も予定値もない行は、直前項目の折り返し・続きとして結合する。
+        ・見積書表示用に、各論理項目の1行目と2行目を別途保持する。
 
-        「項目」と「予定工数／予定金額」を含む行を
-        作業内容セクションの開始位置として使用する。
-
-        「合計」「委託先」以降は対象外とする。
+        2行目保持を追加しても、既存の新規項目／続き行判定は変更しない。
         """
 
         items: list[str] = []
+        titles: list[str] = []
+        second_lines: list[str] = []
+
         section_started = False
         item_column_index: int | None = None
+        plan_column_index: int | None = None
 
         for row in table:
             cleaned_cells = [
@@ -1048,10 +1124,6 @@ class TokuchoOtherPdfReader:
 
             # =====================================
             # 作業内容セクション開始
-            #
-            # 「項目」かつ
-            # 「予定工数」または「予定金額」
-            # がある行をヘッダー行とする。
             # =====================================
             if not section_started:
                 has_item_header = bool(
@@ -1074,7 +1146,6 @@ class TokuchoOtherPdfReader:
 
                 section_started = True
 
-                # 「項目」が入っている列を取得
                 for index, cleaned in enumerate(
                     cleaned_cells
                 ):
@@ -1085,7 +1156,16 @@ class TokuchoOtherPdfReader:
                         item_column_index = index
                         break
 
-                # ヘッダー行自体はデータにしない
+                for index, cleaned in enumerate(
+                    cleaned_cells
+                ):
+                    if (
+                        "予定工数" in cleaned
+                        or "予定金額" in cleaned
+                    ):
+                        plan_column_index = index
+                        break
+
                 continue
 
             # =====================================
@@ -1102,9 +1182,13 @@ class TokuchoOtherPdfReader:
             ):
                 break
 
-            # =====================================
-            # 「（参考）作業内容」ラベル行は除外
-            # =====================================
+            if any(
+                self.clean_single_line(cell) == "合計"
+                for cell in cleaned_cells
+                if cell
+            ):
+                break
+
             if (
                 "作業内容" in row_text
                 and len(
@@ -1113,166 +1197,293 @@ class TokuchoOtherPdfReader:
                         for value in cleaned_cells
                         if value
                     ]
-                )
-                <= 2
+                ) <= 2
             ):
                 continue
 
             # =====================================
-            # 項目列から値を取得
+            # 項目列の生データ取得
             # =====================================
-            value = ""
+            raw_value = ""
 
             if (
                 item_column_index is not None
                 and item_column_index < len(row)
+                and row[item_column_index]
             ):
-                raw_value = row[item_column_index]
+                raw_value = str(
+                    row[item_column_index]
+                )
 
-                if raw_value:
-                    lines = [
-                        self.clean_single_line(line)
-                        for line in str(raw_value).splitlines()
-                        if self.clean_single_line(line)
-                    ]
-
-                    # セル内に複数行ある場合は、各行を個別の作業内容として扱う。
-                    if len(lines) >= 2:
-                        for line in lines:
-                            cleaned_item = self.clean_work_item(line)
-
-                            if not cleaned_item:
-                                continue
-
-                            if cleaned_item in (
-                                "合計",
-                                "項目",
-                                "項 目",
-                                "（参考）",
-                                "(参考)",
-                                "作業内容",
-                                "（参考）作業内容",
-                                "(参考)作業内容",
-                            ):
-                                continue
-
-                            if (
-                                "予定工数" in cleaned_item
-                                or "予定金額" in cleaned_item
-                            ):
-                                continue
-
-                            items.append(cleaned_item)
-
+            if not raw_value:
+                for index, candidate in enumerate(row):
+                    if index == plan_column_index:
                         continue
 
-                    if lines:
-                        value = lines[0]
+                    candidate_text = self.clean_cell(
+                        candidate
+                    )
 
-            # =====================================
-            # 項目列が空欄の場合のフォールバック
-            # =====================================
-            if not value:
-                for candidate in cleaned_cells:
-                    if not candidate:
+                    if not candidate_text:
                         continue
 
-                    # 工数だけのセル
-                    if re.fullmatch(
-                        r"\d+(?:\.\d+)?\s*Hr",
-                        candidate,
-                        flags=re.IGNORECASE,
+                    if self.is_ignored_work_item_value(
+                        candidate_text
                     ):
                         continue
 
-                    # 金額だけのセル
-                    if re.fullmatch(
-                        r"[￥¥]?\s*[\d,，]+"
-                        r"(?:\.\d+)?\s*円?",
-                        candidate,
-                    ):
-                        continue
-
-                    # 不要な見出し
-                    if candidate in (
-                        "合計",
-                        "項目",
-                        "項 目",
-                        "（参考）",
-                        "(参考)",
-                        "作業内容",
-                        "（参考）作業内容",
-                        "(参考)作業内容",
-                        "（参考）予定工数",
-                        "(参考)予定工数",
-                        "（参考）予定金額",
-                        "(参考)予定金額",
-                    ):
-                        continue
-
-                    if (
-                        "予定工数" in candidate
-                        or "予定金額" in candidate
-                    ):
-                        continue
-
-                    value = candidate
+                    raw_value = str(candidate)
                     break
 
-            # =====================================
-            # 値を整形
-            # =====================================
-            value = self.clean_work_item(
-                value
-            )
-
-            if not value:
+            if not raw_value:
                 continue
 
             # =====================================
-            # 見出し・不要値を除外
+            # セル内の物理行を保持
             # =====================================
-            if value in (
-                "合計",
-                "項目",
-                "項 目",
-                "（参考）",
-                "(参考)",
-                "作業内容",
-                "（参考）作業内容",
-                "(参考)作業内容",
+            raw_lines = [
+                self.clean_single_line(line)
+                for line in raw_value.splitlines()
+                if self.clean_single_line(line)
+            ]
+
+            if not raw_lines:
+                continue
+
+            raw_joined = " ".join(raw_lines)
+
+            if self.is_ignored_work_item_value(
+                raw_joined
             ):
                 continue
+
+            has_item_marker = self.has_work_item_marker(
+                raw_lines[0]
+            )
+
+            cleaned_item = self.clean_work_item(
+                raw_joined
+            )
+
+            if not cleaned_item:
+                continue
+
+            first_line_title = self.clean_work_item(
+                raw_lines[0]
+            )
+
+            second_line = ""
+
+            if len(raw_lines) >= 2:
+                second_line = self.clean_work_item(
+                    raw_lines[1]
+                )
+
+            # =====================================
+            # 予定工数／予定金額
+            # =====================================
+            plan_value = ""
 
             if (
-                "予定工数" in value
-                or "予定金額" in value
+                plan_column_index is not None
+                and plan_column_index < len(row)
             ):
-                continue
+                plan_value = self.clean_cell(
+                    row[plan_column_index]
+                )
 
-            # 工数だけの行
-            if re.fullmatch(
-                r"\d+(?:\.\d+)?\s*Hr",
-                value,
-                flags=re.IGNORECASE,
-            ):
-                continue
-
-            # 金額だけの行
-            if re.fullmatch(
-                r"[￥¥]?\s*[\d,，]+"
-                r"(?:\.\d+)?\s*円?",
-                value,
-            ):
-                continue
-
-            items.append(
-                value
+            has_plan_value = self.has_work_item_plan_value(
+                plan_value
             )
 
-        return self.unique_nonempty(
-            items
+            # =====================================
+            # 新規項目 / 続き行
+            # =====================================
+            if has_item_marker or has_plan_value:
+                items.append(cleaned_item)
+                titles.append(
+                    first_line_title
+                    or cleaned_item
+                )
+                second_lines.append(
+                    second_line
+                )
+                continue
+
+            if items:
+                items[-1] = self.clean_single_line(
+                    f"{items[-1]} {cleaned_item}"
+                )
+
+                # 直前項目に2行目がまだ無ければ、
+                # 続き行の先頭を2行目として採用する。
+                if (
+                    second_lines
+                    and not second_lines[-1]
+                ):
+                    second_lines[-1] = (
+                        first_line_title
+                        or cleaned_item
+                    )
+            else:
+                items.append(cleaned_item)
+                titles.append(
+                    first_line_title
+                    or cleaned_item
+                )
+                second_lines.append(
+                    second_line
+                )
+
+        normalized_items = (
+            self.nonempty_preserve_duplicates(
+                items
+            )
         )
+        normalized_titles = (
+            self.nonempty_preserve_duplicates(
+                titles
+            )
+        )
+
+        if normalized_items:
+            self._last_work_item_titles = (
+                normalized_titles
+            )
+
+            normalized_second_lines = [
+                self.clean_work_item(value)
+                if value else ""
+                for value in second_lines
+            ]
+
+            if (
+                len(normalized_second_lines)
+                < len(normalized_titles)
+            ):
+                normalized_second_lines.extend(
+                    [
+                        ""
+                        for _ in range(
+                            len(normalized_titles)
+                            - len(normalized_second_lines)
+                        )
+                    ]
+                )
+
+            self._last_work_item_second_lines = (
+                normalized_second_lines[
+                    :len(normalized_titles)
+                ]
+            )
+
+        return normalized_items
+
+    def has_work_item_marker(
+        self,
+        value: str,
+    ) -> bool:
+        """作業項目の先頭に明示的な番号・記号があるか判定する。"""
+
+        cleaned = self.clean_single_line(value)
+
+        if not cleaned:
+            return False
+
+        return bool(
+            re.match(
+                r"^(?:"
+                r"[①②③④⑤⑥⑦⑧⑨⑩]+(?:[：:])?"
+                r"|\(?\d+\)?[\.．、：:]"
+                r")",
+                cleaned,
+            )
+        )
+
+    def has_work_item_plan_value(
+        self,
+        value: str,
+    ) -> bool:
+        """予定工数／予定金額セルに実データがあるか判定する。"""
+
+        cleaned = self.clean_single_line(value)
+
+        if not cleaned:
+            return False
+
+        if (
+            "予定工数" in cleaned
+            or "予定金額" in cleaned
+        ):
+            return False
+
+        # 「－」も、元帳票でその行が独立した項目であることを示す値として扱う。
+        if cleaned in {"-", "－", "―", "ー"}:
+            return True
+
+        if re.fullmatch(
+            r"\d+(?:\.\d+)?\s*Hr",
+            cleaned,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
+        if re.fullmatch(
+            r"[￥¥]?\s*[\d,，]+(?:\.\d+)?\s*円?",
+            cleaned,
+        ):
+            return True
+
+        # 上記以外でも予定列に文字が入っていれば独立項目の補助情報とする。
+        return True
+
+    def is_ignored_work_item_value(
+        self,
+        value: str,
+    ) -> bool:
+        """作業内容として扱わない見出し・工数・金額を判定する。"""
+
+        cleaned = self.clean_single_line(value)
+
+        if not cleaned:
+            return True
+
+        if cleaned in {
+            "合計",
+            "項目",
+            "項 目",
+            "（参考）",
+            "(参考)",
+            "作業内容",
+            "（参考）作業内容",
+            "(参考)作業内容",
+            "（参考）予定工数",
+            "(参考)予定工数",
+            "（参考）予定金額",
+            "(参考)予定金額",
+        }:
+            return True
+
+        if (
+            "予定工数" in cleaned
+            or "予定金額" in cleaned
+        ):
+            return True
+
+        if re.fullmatch(
+            r"\d+(?:\.\d+)?\s*Hr",
+            cleaned,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
+        if re.fullmatch(
+            r"[￥¥]?\s*[\d,，]+(?:\.\d+)?\s*円?",
+            cleaned,
+        ):
+            return True
+
+        return False
 
     def extract_work_items_from_text(
         self,
@@ -1841,6 +2052,30 @@ class TokuchoOtherPdfReader:
         return value.translate(
             translation
         ).strip()
+
+    def nonempty_preserve_duplicates(
+        self,
+        values: list[str],
+    ) -> list[str]:
+        """
+        空文字だけを除外し、重複は残したまま返す。
+
+        作業項目では、同じ見出しが別項目として複数回登場することがある。
+        そのため output_titles など、項目数・順序の維持が必要な用途では
+        unique_nonempty() を使わず、このメソッドを使用する。
+        """
+
+        result: list[str] = []
+
+        for value in values:
+            cleaned = self.clean_single_line(value)
+
+            if not cleaned:
+                continue
+
+            result.append(cleaned)
+
+        return result
 
     def unique_nonempty(
         self,
