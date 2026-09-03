@@ -194,13 +194,12 @@ class TokuchoOtherPdfReader:
 
         if missing_fields:
             raise ValueError(
-                "PDFから次の項目を取得できませんでした。\n\n"
-                + "\n".join(
-                    f"・{field_name}"
-                    for field_name in missing_fields
+                self.build_extraction_error_message(
+                    path=path,
+                    text=text,
+                    tables=tables,
+                    missing_fields=missing_fields,
                 )
-                + "\n\n"
-                f"対象PDF：{path.name}"
             )
 
         data = EstimateData()
@@ -221,6 +220,105 @@ class TokuchoOtherPdfReader:
         data.model_code = model_code
 
         return data
+
+    # =====================================
+    # 抽出失敗時のエラーメッセージ
+    # =====================================
+    def build_extraction_error_message(
+        self,
+        path: Path,
+        text: str,
+        tables: list[list[list[str | None]]],
+        missing_fields: list[str],
+    ) -> str:
+        """
+        必須項目の抽出に失敗した場合のメッセージを生成する。
+
+        想定フォーマットの特徴が弱い場合、または複数の必須項目を
+        同時に取得できなかった場合は、単なる項目欠落ではなく
+        「特調以外TBで対応しているPDF形式と異なる可能性」を案内する。
+
+        1項目だけの抽出失敗で、帳票の主要見出しが十分確認できる場合は、
+        従来どおり取得できなかった項目を中心に案内する。
+        """
+
+        missing_text = "\n".join(
+            f"・{field_name}"
+            for field_name in missing_fields
+        )
+
+        if self.is_possible_format_mismatch(
+            text=text,
+            tables=tables,
+            missing_fields=missing_fields,
+        ):
+            return (
+                "PDFのフォーマットが対応形式と異なる可能性があります。\n\n"
+                "処理種別：特調以外TB\n\n"
+                "選択したPDFが「特調以外TB」の業務委託計画書"
+                "フォーマットであることを確認してください。\n\n"
+                "取得できなかった項目：\n"
+                f"{missing_text}\n\n"
+                f"対象PDF：{path.name}"
+            )
+
+        return (
+            "PDFから次の項目を取得できませんでした。\n\n"
+            f"{missing_text}\n\n"
+            f"対象PDF：{path.name}"
+        )
+
+    def is_possible_format_mismatch(
+        self,
+        text: str,
+        tables: list[list[list[str | None]]],
+        missing_fields: list[str],
+    ) -> bool:
+        """
+        特調以外TBの想定フォーマットと異なる可能性が高いか判定する。
+
+        判定は安全側に倒し、次のどちらかを満たした場合に警告する。
+
+        ・必須項目を2つ以上同時に取得できない
+        ・主要な帳票見出しが十分に確認できない
+
+        エラーメッセージでは断定せず「可能性があります」と表現する。
+        """
+
+        if len(missing_fields) >= 2:
+            return True
+
+        combined_text_parts = [text or ""]
+
+        for table in tables or []:
+            for row in table or []:
+                combined_text_parts.extend(
+                    self.clean_cell(cell)
+                    for cell in row or []
+                    if cell is not None
+                )
+
+        combined_text = " ".join(combined_text_parts)
+
+        format_markers = (
+            "業務委託計画書",
+            "計画部署",
+            "件名",
+            "OUTPUT",
+            "作業内容",
+            "委託金額",
+            "納期",
+        )
+
+        marker_count = sum(
+            1
+            for marker in format_markers
+            if marker in combined_text
+        )
+
+        # 正常な特調以外TB帳票では主要見出しの大半が確認できる。
+        # 4個未満の場合は別フォーマットの可能性が高い。
+        return marker_count < 4
 
     # =====================================
     # PDF全文・表取得

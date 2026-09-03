@@ -187,9 +187,34 @@ class PDFReader:
             [],
         )
 
+        output_titles, output_second_lines = (
+            self.build_output_display_metadata(
+                data.outputs
+            )
+        )
+
+        setattr(
+            data,
+            "output_titles",
+            output_titles,
+        )
+
+        setattr(
+            data,
+            "output_second_lines",
+            output_second_lines,
+        )
+
+        setattr(
+            data,
+            "output_layout_mode",
+            "tokucho",
+        )
+
         self.validate_data(
             data=data,
             pdf_path=Path(pdf_path),
+            source_text="",
         )
 
         return data
@@ -241,9 +266,38 @@ class PDFReader:
             lines
         )
 
+        # 見積書表示用データ
+        # outputs              : 元PDFから取得した成果物全文
+        # output_titles        : 各成果物の1行目
+        # output_second_lines  : 各成果物の2行目
+        output_titles, output_second_lines = (
+            self.build_output_display_metadata(
+                data.outputs
+            )
+        )
+
+        setattr(
+            data,
+            "output_titles",
+            output_titles,
+        )
+
+        setattr(
+            data,
+            "output_second_lines",
+            output_second_lines,
+        )
+
+        setattr(
+            data,
+            "output_layout_mode",
+            "tokucho",
+        )
+
         self.validate_data(
             data=data,
             pdf_path=pdf_path,
+            source_text=text,
         )
 
         return data
@@ -252,6 +306,7 @@ class PDFReader:
         self,
         data: EstimateData,
         pdf_path: Path,
+        source_text: str = "",
     ) -> None:
         """
         見積書作成に必要な項目が取得できたか確認する。
@@ -291,14 +346,144 @@ class PDFReader:
 
         if missing_fields:
             raise ValueError(
-                "PDFから次の項目を取得できませんでした。\n\n"
-                + "\n".join(
-                    f"・{field_name}"
-                    for field_name in missing_fields
+                self.build_extraction_error_message(
+                    pdf_path=pdf_path,
+                    source_text=source_text,
+                    missing_fields=missing_fields,
                 )
-                + "\n\n"
+            )
+
+    # =====================================
+    # 抽出失敗時のエラーメッセージ
+    # =====================================
+
+    def build_extraction_error_message(
+        self,
+        pdf_path: Path,
+        source_text: str,
+        missing_fields: list[str],
+    ) -> str:
+        """
+        必須項目が複数取得できない場合、または
+        特調TBの主要マーカーが不足している場合は、
+        PDFフォーマット違いの可能性を案内する。
+        """
+
+        missing_text = "\n".join(
+            f"・{field_name}"
+            for field_name in missing_fields
+        )
+
+        if self.is_possible_format_mismatch(
+            source_text=source_text,
+            missing_fields=missing_fields,
+        ):
+            return (
+                "PDFのフォーマットが対応形式と異なる可能性があります。\n\n"
+                "処理種別：特調TB\n\n"
+                "選択したPDFが「特調TB」の業務委託計画書"
+                "フォーマットであることを確認してください。\n\n"
+                "取得できなかった項目：\n"
+                f"{missing_text}\n\n"
                 f"対象PDF：{pdf_path.name}"
             )
+
+        return (
+            "PDFから次の項目を取得できませんでした。\n\n"
+            f"{missing_text}\n\n"
+            f"対象PDF：{pdf_path.name}"
+        )
+
+    def is_possible_format_mismatch(
+        self,
+        source_text: str,
+        missing_fields: list[str],
+    ) -> bool:
+        """
+        特調TBフォーマットと異なる可能性を簡易判定する。
+        """
+
+        if len(missing_fields) >= 2:
+            return True
+
+        combined_text = source_text or ""
+
+        # 画像PDFではsource_textが空になるため、
+        # 1項目だけの欠落をフォーマット違いとは断定しない。
+        if not combined_text.strip():
+            return False
+
+        format_markers = (
+            "依頼部署",
+            "Request Div",
+            "件名",
+            "Job Title",
+            "成果物名称",
+            "Name of output",
+            "委託金額",
+            "納期",
+        )
+
+        marker_count = sum(
+            1
+            for marker in format_markers
+            if marker in combined_text
+        )
+
+        return marker_count < 4
+
+    # =====================================
+    # 成果物表示用メタデータ
+    # =====================================
+
+    def build_output_display_metadata(
+        self,
+        outputs: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """
+        成果物全文から、見積書表示用の1行目・2行目を作る。
+
+        outputsは全文を保持したまま、表示用だけを分離する。
+        """
+
+        titles: list[str] = []
+        second_lines: list[str] = []
+
+        for output in outputs or []:
+            text = self._remove_output_number(
+                str(output or "")
+            ).strip()
+
+            if not text:
+                continue
+
+            physical_lines = [
+                self.clean_value(line)
+                for line in text.splitlines()
+                if self.clean_value(line)
+            ]
+
+            if not physical_lines:
+                continue
+
+            titles.append(physical_lines[0])
+            second_lines.append(
+                physical_lines[1]
+                if len(physical_lines) >= 2
+                else ""
+            )
+
+        return titles, second_lines
+
+    def _remove_output_number(
+        self,
+        text: str,
+    ) -> str:
+        return re.sub(
+            r"^[①-⑳]\s*",
+            "",
+            text or "",
+        ).strip()
 
     # =====================================
     # 文字列の正規化
@@ -705,10 +890,55 @@ class PDFReader:
     ) -> list[str]:
         """
         成果物一覧を取得する。
+
+        特調TBのPDFでは、pdfplumberの抽出結果が次の2パターンになる。
+
+        パターン1:
+            ① 設計問題点の調査、展開
+            市場不具合の確認・分類・判定根拠整理
+
+        パターン2:
+            ②
+            市場不具合 発生箇所の確認
+            製品図面などの発生箇所情報を確認
+
+        ①～⑳が本文と同じ行にある場合だけでなく、
+        番号だけが独立した行として抽出される場合にも対応する。
+
+        空のテンプレート行では「④」「⑤」「⑥」のように
+        番号だけが連続することがあるため、本文を持たない項目は
+        成果物として追加しない。
         """
 
         outputs: list[str] = []
+        current_lines: list[str] = []
         started = False
+        waiting_for_content = False
+
+        end_markers = (
+            "成果物に",
+            "Requirement",
+            "TBから提供する",
+            "Information provided",
+        )
+
+        def flush_current() -> None:
+            nonlocal current_lines
+            nonlocal waiting_for_content
+
+            cleaned_lines = [
+                self.clean_value(value)
+                for value in current_lines
+                if self.clean_value(value)
+            ]
+
+            if cleaned_lines:
+                outputs.append(
+                    "\n".join(cleaned_lines)
+                )
+
+            current_lines = []
+            waiting_for_content = False
 
         for line in lines:
             stripped_line = line.strip()
@@ -723,27 +953,57 @@ class PDFReader:
             if not started:
                 continue
 
-            if (
-                "成果物に" in stripped_line
-                or "Requirement" in stripped_line
-                or "TBから提供する" in stripped_line
-                or "Information provided" in stripped_line
+            if any(
+                marker in stripped_line
+                for marker in end_markers
             ):
+                flush_current()
                 break
 
-            match = re.match(
-                r"^[①-⑳]\s*(.+)$",
+            # 「① 本文」と「②」の両方を認識する。
+            numbered_match = re.match(
+                r"^[①-⑳]\s*(.*)$",
                 stripped_line,
             )
 
-            if not match:
-                continue
+            if numbered_match:
+                flush_current()
 
-            value = match.group(1).strip()
-
-            if value:
-                outputs.append(
-                    value
+                value = (
+                    numbered_match
+                    .group(1)
+                    .strip()
                 )
 
+                if value:
+                    current_lines = [value]
+                    waiting_for_content = False
+                else:
+                    # 番号だけの行。
+                    # 次の通常行をこの成果物の1行目として扱う。
+                    waiting_for_content = True
+
+                continue
+
+            if not stripped_line:
+                continue
+
+            if waiting_for_content:
+                current_lines = [
+                    stripped_line
+                ]
+                waiting_for_content = False
+                continue
+
+            if not current_lines:
+                continue
+
+            current_lines.append(
+                stripped_line
+            )
+
+        else:
+            flush_current()
+
         return outputs
+

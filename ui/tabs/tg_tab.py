@@ -124,6 +124,7 @@ class TgTab(QWidget):
 
         self.execute_button.clicked.connect(self.execute_all)
         self.cancel_button.clicked.connect(self.cancel_processing)
+        self.result_table.cellDoubleClicked.connect(self.show_result_detail)
 
     def get_common_inputs(self) -> dict:
         if not callable(self.input_provider):
@@ -459,6 +460,10 @@ class TgTab(QWidget):
                     Qt.AlignmentFlag.AlignCenter
                 )
 
+            item.setData(
+                Qt.ItemDataRole.UserRole,
+                str(detail or ""),
+            )
             if detail:
                 item.setToolTip(detail)
 
@@ -468,6 +473,39 @@ class TgTab(QWidget):
                 item,
             )
         self.update_summary()
+
+    def show_result_detail(self, row: int, column: int) -> None:
+        request_item = self.result_table.item(row, self.COL_REQUEST_NO)
+        estimate_item = self.result_table.item(row, self.COL_ESTIMATE_NO)
+        result_item = self.result_table.item(row, self.COL_RESULT)
+
+        request_no = request_item.text().strip() if request_item else ""
+        estimate_no = estimate_item.text().strip() if estimate_item else ""
+        result_text = result_item.text().strip() if result_item else ""
+
+        detail = ""
+        if result_item is not None:
+            detail = str(
+                result_item.data(Qt.ItemDataRole.UserRole)
+                or result_item.toolTip()
+                or ""
+            ).strip()
+
+        if not detail:
+            detail = "詳細情報なし"
+
+        CustomMessageDialog.information(
+            parent=self,
+            title="処理結果詳細",
+            heading="選択した処理結果の詳細",
+            message=(
+                f"見積依頼番号：{request_no or '-'}\n"
+                f"見積/請求番号：{estimate_no or '未採番'}\n"
+                f"結果：{result_text or '-'}\n\n"
+                "詳細：\n"
+                f"{detail}"
+            ),
+        )
 
     def update_summary(self) -> None:
         total = self.result_table.rowCount()

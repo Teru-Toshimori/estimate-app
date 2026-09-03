@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from services.excel.excel_automation_helper import ExcelAutomationSession
+from services.text.work_item_shortener import WorkItemShortener
 
 
 class ExcelWriter:
@@ -34,7 +35,7 @@ class ExcelWriter:
     OUTPUT_END_ROW = 24
 
     # =====================================
-    # 特調以外TB 作業内容表示設定
+    # 特調TB / 特調以外TB 作業内容表示設定
     # =====================================
 
     # 特調以外TBの作業項目タイトルを
@@ -320,12 +321,49 @@ class ExcelWriter:
             #   従来どおりoutputsを使用する。
             display_output_rows = None
 
-            if output_layout_mode == "tokucho_other":
+            if output_layout_mode in (
+                "tokucho",
+                "tokucho_other",
+            ):
                 display_output_rows = getattr(
                     data,
                     "display_output_rows",
                     None,
                 )
+
+                # 特調TBではReaderがoutput_titles / output_second_linesを
+                # 保持するため、専用Writerを挟まなくてもここで
+                # 特調以外TBと同じ表示行を生成できるようにする。
+                if (
+                    output_layout_mode == "tokucho"
+                    and not display_output_rows
+                ):
+                    display_output_rows = (
+                        self._build_extended_display_rows(
+                            data=data,
+                            max_rows=(
+                                end_row
+                                - start_row
+                                + 1
+                            ),
+                        )
+                    )
+
+                    setattr(
+                        data,
+                        "display_output_rows",
+                        display_output_rows,
+                    )
+
+                    setattr(
+                        data,
+                        "display_outputs",
+                        [
+                            row.get("text", "")
+                            for row in display_output_rows
+                            if row.get("text")
+                        ],
+                    )
 
                 raw_outputs = (
                     getattr(
@@ -378,12 +416,12 @@ class ExcelWriter:
                 end_row=end_row,
             )
 
-            if (
-                output_layout_mode
-                == "tokucho_other"
+            if output_layout_mode in (
+                "tokucho",
+                "tokucho_other",
             ):
                 # =====================================
-                # 特調以外TB
+                # 特調TB / 特調以外TB 共通の長文対応
                 # =====================================
 
                 # テンプレート側で
@@ -478,6 +516,172 @@ class ExcelWriter:
             session.close()
 
     # =====================================
+    # 特調TB 表示行生成
+    # =====================================
+    def _build_extended_display_rows(
+        self,
+        data,
+        max_rows: int = 7,
+    ) -> list[dict]:
+        """
+        特調TBの成果物を、特調以外TBと同じ表示ルールで
+        見積書用の行データへ変換する。
+
+        ルール:
+            ・通常は各成果物の1行目を表示する。
+            ・同名の1行目が複数ある場合だけ2行目で区別する。
+            ・2行表示しても7行以内なら、2行目をNo.なしで追加する。
+            ・7行を超える場合は、同名項目だけ1行目+2行目を結合し、
+              WorkItemShortenerで1行表示用に短縮する。
+            ・長い1行目もWorkItemShortenerへ渡す。
+        """
+
+        work_items = (
+            getattr(
+                data,
+                "output_titles",
+                None,
+            )
+            or getattr(
+                data,
+                "outputs",
+                [],
+            )
+            or []
+        )
+
+        work_items = [
+            self._safe_text(value).strip()
+            for value in work_items
+            if self._safe_text(value).strip()
+        ]
+
+        if not work_items:
+            return []
+
+        second_lines = list(
+            getattr(
+                data,
+                "output_second_lines",
+                [],
+            )
+            or []
+        )
+
+        if len(second_lines) < len(work_items):
+            second_lines.extend(
+                [
+                    ""
+                    for _ in range(
+                        len(work_items)
+                        - len(second_lines)
+                    )
+                ]
+            )
+
+        second_lines = [
+            self._safe_text(value).strip()
+            for value in second_lines[:len(work_items)]
+        ]
+
+        normalized_titles = [
+            self._normalize_output_title_key(value)
+            for value in work_items
+        ]
+
+        title_counts: dict[str, int] = {}
+
+        for key in normalized_titles:
+            if key:
+                title_counts[key] = (
+                    title_counts.get(key, 0)
+                    + 1
+                )
+
+        duplicate_flags = [
+            bool(
+                key
+                and title_counts.get(key, 0) > 1
+            )
+            for key in normalized_titles
+        ]
+
+        extra_rows = sum(
+            1
+            for is_duplicate, second_line in zip(
+                duplicate_flags,
+                second_lines,
+            )
+            if is_duplicate and second_line
+        )
+
+        can_use_continuation_rows = (
+            len(work_items) + extra_rows
+            <= max_rows
+        )
+
+        shortener = WorkItemShortener()
+        rows: list[dict] = []
+
+        for index, title in enumerate(work_items):
+            second_line = second_lines[index]
+            is_duplicate = duplicate_flags[index]
+
+            if (
+                is_duplicate
+                and second_line
+                and can_use_continuation_rows
+            ):
+                rows.append(
+                    {
+                        "number": index + 1,
+                        "text": shortener.shorten(title),
+                    }
+                )
+
+                rows.append(
+                    {
+                        "number": None,
+                        "text": shortener.shorten(
+                            second_line
+                        ),
+                    }
+                )
+
+                continue
+
+            display_text = title
+
+            if is_duplicate and second_line:
+                display_text = (
+                    f"{title} {second_line}"
+                ).strip()
+
+            rows.append(
+                {
+                    "number": index + 1,
+                    "text": shortener.shorten(
+                        display_text
+                    ),
+                }
+            )
+
+        return rows[:max_rows]
+
+    def _normalize_output_title_key(
+        self,
+        value,
+    ) -> str:
+        """空白差だけの同名成果物も同じタイトルとして扱う。"""
+
+        text = self._safe_text(value).strip()
+        return re.sub(
+            r"\s+",
+            " ",
+            text,
+        )
+
+    # =====================================
     # 作業内容欄クリア
     # =====================================
     def _clear_output_area(
@@ -500,7 +704,7 @@ class ExcelWriter:
             ).value = None
 
     # =====================================
-    # 特調以外TB 作業内容セル設定
+    # 特調TB / 特調以外TB 作業内容セル設定
     # =====================================
     def _configure_tokucho_other_output_cells(
         self,
@@ -579,7 +783,7 @@ class ExcelWriter:
             )
 
     # =====================================
-    # 特調以外TB 作業内容出力
+    # 特調TB / 特調以外TB 作業内容出力
     # =====================================
     def _write_tokucho_other_outputs(
         self,

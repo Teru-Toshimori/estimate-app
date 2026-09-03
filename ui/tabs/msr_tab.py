@@ -284,6 +284,9 @@ class MsrTab(QWidget):
         self.cancel_button.clicked.connect(
             self.cancel_processing
         )
+        self.result_table.cellDoubleClicked.connect(
+            self.show_result_detail
+        )
 
     # =====================================
     # 担当者シート
@@ -413,6 +416,10 @@ class MsrTab(QWidget):
             Qt.AlignmentFlag.AlignCenter
         )
 
+        result_item.setData(
+            Qt.ItemDataRole.UserRole,
+            str(detail or ""),
+        )
         if detail:
             result_item.setToolTip(detail)
 
@@ -480,9 +487,57 @@ class MsrTab(QWidget):
                 self.RESULT_COLUMN_STATUS,
             )
             item.setText(str(result_text))
+            item.setData(
+                Qt.ItemDataRole.UserRole,
+                str(detail or ""),
+            )
             item.setToolTip(detail)
 
         self.update_result_summary()
+
+    def show_result_detail(
+        self,
+        row: int,
+        column: int,
+    ) -> None:
+
+        request_item = self.result_table.item(
+            row, self.RESULT_COLUMN_REQUEST_NO
+        )
+        estimate_item = self.result_table.item(
+            row, self.RESULT_COLUMN_ESTIMATE_NO
+        )
+        result_item = self.result_table.item(
+            row, self.RESULT_COLUMN_STATUS
+        )
+
+        request_no = request_item.text().strip() if request_item else ""
+        estimate_no = estimate_item.text().strip() if estimate_item else ""
+        result_text = result_item.text().strip() if result_item else ""
+
+        detail = ""
+        if result_item is not None:
+            detail = str(
+                result_item.data(Qt.ItemDataRole.UserRole)
+                or result_item.toolTip()
+                or ""
+            ).strip()
+
+        if not detail:
+            detail = "詳細情報なし"
+
+        CustomMessageDialog.information(
+            parent=self,
+            title="処理結果詳細",
+            heading="選択した処理結果の詳細",
+            message=(
+                f"見積依頼番号：{request_no or '-'}\n"
+                f"見積/請求番号：{estimate_no or '未採番'}\n"
+                f"結果：{result_text or '-'}\n\n"
+                "詳細：\n"
+                f"{detail}"
+            ),
+        )
 
     def get_result_counts(self) -> dict[str, int]:
 
