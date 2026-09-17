@@ -76,6 +76,36 @@ class PDFReader:
             text_parts
         )
 
+    def read_tables(
+        self,
+        pdf_path: str | Path,
+    ) -> list[list[list[str | None]]]:
+        """
+        PDF全ページから表を取得する。
+
+        特調TBの成果物は「成果物名称」と「備考」が別列のため、
+        表の列構造を利用して成果物名称だけを抽出する。
+        """
+
+        path = Path(pdf_path)
+        tables: list[list[list[str | None]]] = []
+
+        try:
+            with pdfplumber.open(str(path)) as pdf:
+                for page in pdf.pages:
+                    for table in (page.extract_tables() or []):
+                        if table:
+                            tables.append(table)
+        except Exception as error:
+            # 表抽出だけに失敗した場合は従来のテキスト解析へ戻す。
+            logger.warning(
+                "PDF表抽出に失敗しました。テキスト解析へフォールバックします: %s (%s)",
+                path.name,
+                error,
+            )
+
+        return tables
+
     def parse(
         self,
         pdf_path: str | Path,
@@ -87,6 +117,13 @@ class PDFReader:
         path = Path(pdf_path)
 
         text = self.read_text(
+            path
+        )
+
+        # 文字PDFでは成果物表の列構造も利用する。
+        # 「成果物名称」と右側の「備考」を確実に分離するため、
+        # pdfplumberで抽出した表を保持する。
+        tables = self.read_tables(
             path
         )
 
@@ -114,6 +151,7 @@ class PDFReader:
         return self.parse_text_pdf(
             text=text,
             pdf_path=path,
+            tables=tables,
         )
 
     def is_image_pdf(
@@ -223,6 +261,7 @@ class PDFReader:
         self,
         text: str,
         pdf_path: Path,
+        tables: list[list[list[str | None]]] | None = None,
     ) -> EstimateData:
         """
         文字情報を持つPDFを従来方式で解析する。
@@ -262,9 +301,16 @@ class PDFReader:
         )
 
         # 成果物
-        data.outputs = self.get_outputs(
-            lines
+        # 表から「成果物名称」列だけを取得し、右側の「備考」は除外する。
+        # 表として認識できない帳票は従来のテキスト解析へフォールバックする。
+        data.outputs = self.get_outputs_from_tables(
+            tables or []
         )
+
+        if not data.outputs:
+            data.outputs = self.get_outputs(
+                lines
+            )
 
         # 見積書表示用データ
         # outputs              : 元PDFから取得した成果物全文
@@ -883,6 +929,106 @@ class PDFReader:
     # =====================================
     # 成果物
     # =====================================
+
+    def get_outputs_from_tables(
+        self,
+        tables: list[list[list[str | None]]],
+    ) -> list[str]:
+        """PDF内の表から成果物名称列だけを取得する。"""
+
+        for table in tables or []:
+            outputs = self.get_outputs_from_table(table)
+
+            if outputs:
+                return outputs
+
+        return []
+
+    def get_outputs_from_table(
+        self,
+        table: list[list[str | None]],
+    ) -> list[str]:
+        """
+        「成果物名称 / Name of output(s)」列だけを取得する。
+
+        右側の「備考 / Remarks」は別列として扱い、
+        成果物には含めない。
+        """
+
+        output_column_index: int | None = None
+        header_row_index: int | None = None
+
+        for row_index, row in enumerate(table or []):
+            for column_index, cell in enumerate(row or []):
+                value = self.clean_value(str(cell or ""))
+
+                if (
+                    "成果物名称" in value
+                    or "Name of output" in value
+                ):
+                    output_column_index = column_index
+                    header_row_index = row_index
+                    break
+
+            if output_column_index is not None:
+                break
+
+        if (
+            output_column_index is None
+            or header_row_index is None
+        ):
+            return []
+
+        outputs: list[str] = []
+
+        end_markers = (
+            "成果物に盛り込む",
+            "要求事項",
+            "Requirement",
+            "TBから提供する",
+            "Information provided",
+        )
+
+        for row in table[header_row_index + 1:]:
+            if not row:
+                continue
+
+            row_text = " ".join(
+                self.clean_value(str(cell or ""))
+                for cell in row
+                if cell is not None
+            )
+
+            if any(marker in row_text for marker in end_markers):
+                break
+
+            if output_column_index >= len(row):
+                continue
+
+            raw_value = row[output_column_index]
+
+            if raw_value is None:
+                continue
+
+            value = re.sub(
+                r"^[①-⑳]\s*",
+                "",
+                str(raw_value).strip(),
+            ).strip()
+
+            if not value:
+                continue
+
+            physical_lines = [
+                self.clean_value(line)
+                for line in value.splitlines()
+                if self.clean_value(line)
+            ]
+
+            if physical_lines:
+                outputs.append("\\n".join(physical_lines))
+
+        return outputs
 
     def get_outputs(
         self,

@@ -170,7 +170,8 @@ class TokuchoOtherPdfReader:
         )
 
         due_date = (
-            self.extract_due_date_from_table(main_table)
+            self.extract_due_date_from_tables(tables)
+            or self.extract_due_date_from_table(main_table)
             or self.extract_due_date_from_text(text)
         )
 
@@ -497,8 +498,13 @@ class TokuchoOtherPdfReader:
 
                     # 右隣セルに部署名だけが入る帳票。
                     # 「室」などの明確な除外値でなければ部署名として扱う。
-                    if not any(
-                        keyword in value
+                    # 承認欄などを部署名として誤認しない。
+                    # PDFによっては「承 認」のように文字間へ空白が入るため、
+                    # 判定時だけ空白を除去して確認する。
+                    compact_value = re.sub(r"[\s　]+", "", value)
+
+                    if any(
+                        keyword in compact_value
                         for keyword in (
                             "連絡先",
                             "承認",
@@ -507,11 +513,14 @@ class TokuchoOtherPdfReader:
                             "予算",
                         )
                     ):
-                        return (
-                            value
-                            if value.endswith("部")
-                            else value + "部"
-                        )
+                        continue
+
+                    # 「計画部署」の右側に通常の部署名がある帳票だけを対象とする。
+                    return (
+                        value
+                        if value.endswith("部")
+                        else value + "部"
+                    )
 
             # -------------------------------------
             # パターン2：1セルへ結合された帳票
@@ -547,6 +556,37 @@ class TokuchoOtherPdfReader:
 
                     if candidate:
                         return candidate + "部"
+
+                # 「シート開発領域 連絡先\n計画部署」のように、
+                # 部署名が「○○部」で終わらない帳票にも対応する。
+                # 計画部署より前にある「連絡先」を除去し、残った文字列を
+                # 部署名として採用する。
+                area_candidate = re.sub(
+                    r"\s*連絡先\s*$",
+                    "",
+                    before_label,
+                ).strip()
+
+                area_candidate_compact = re.sub(
+                    r"[\s　]+",
+                    "",
+                    area_candidate,
+                )
+
+                if (
+                    area_candidate
+                    and area_candidate_compact
+                    and not any(
+                        keyword in area_candidate_compact
+                        for keyword in (
+                            "承認",
+                            "審査",
+                            "作成",
+                            "予算",
+                        )
+                    )
+                ):
+                    return self.clean_single_line(area_candidate)
 
         return ""
 
@@ -1236,9 +1276,16 @@ class TokuchoOtherPdfReader:
                     or "予定金額" in row_text
                 )
 
+                has_work_item_label = (
+                    "作業内容" in row_text
+                )
+
+                # 従来帳票は「項目 + 予定工数/予定金額」のヘッダーで開始する。
+                # 帳票差異により「（参考）作業内容」だけが独立した見出しになる
+                # PDFもあるため、その場合も作業内容セクションとして認識する。
                 if not (
-                    has_item_header
-                    and has_plan_column
+                    (has_item_header and has_plan_column)
+                    or has_work_item_label
                 ):
                     continue
 
@@ -1254,6 +1301,16 @@ class TokuchoOtherPdfReader:
                         item_column_index = index
                         break
 
+                # 「項目」見出しが無い帳票では「作業内容」セルの列を
+                # 項目列候補として保持する。次行以降で同じ列から取得する。
+                if item_column_index is None:
+                    for index, cleaned in enumerate(
+                        cleaned_cells
+                    ):
+                        if "作業内容" in cleaned:
+                            item_column_index = index
+                            break
+
                 for index, cleaned in enumerate(
                     cleaned_cells
                 ):
@@ -1264,6 +1321,7 @@ class TokuchoOtherPdfReader:
                         plan_column_index = index
                         break
 
+                # 見出し行そのものは作業項目にしない。
                 continue
 
             # =====================================
@@ -1794,6 +1852,65 @@ class TokuchoOtherPdfReader:
     # =====================================
     # 納期
     # =====================================
+    def extract_due_date_from_tables(
+        self,
+        tables: list[list[list[str | None]]],
+    ) -> str:
+        """
+        PDF内の全テーブルから納期を取得する。
+
+        帳票によって「納期」ラベルと日付が別セル・別行・別テーブルに
+        分かれるため、主表だけに限定せず全テーブルを確認する。
+        """
+
+        date_pattern = re.compile(
+            r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日"
+        )
+
+        for table in tables or []:
+            for row_index, row in enumerate(table or []):
+                cleaned_cells = [
+                    self.clean_cell(cell)
+                    for cell in row or []
+                ]
+                row_text = " ".join(
+                    value for value in cleaned_cells if value
+                )
+
+                if "納期" not in row_text:
+                    continue
+
+                # 同じ行に日付があれば、納期ラベルより後ろを優先する。
+                after_label = row_text.split("納期", 1)[1]
+                match = date_pattern.search(after_label)
+                if match:
+                    return self.format_japanese_date(*match.groups())
+
+                # セル順が崩れている場合に備え、同じ行全体も確認する。
+                same_row_dates = date_pattern.findall(row_text)
+                if same_row_dates:
+                    year, month, day = same_row_dates[-1]
+                    return self.format_japanese_date(year, month, day)
+
+                # 「納期」が見出し行、日付が次行にある帳票。
+                for next_row in table[row_index + 1:row_index + 3]:
+                    next_text = " ".join(
+                        self.clean_cell(cell)
+                        for cell in next_row or []
+                        if self.clean_cell(cell)
+                    )
+                    match = date_pattern.search(next_text)
+                    if match:
+                        return self.format_japanese_date(*match.groups())
+
+        # ラベル位置を特定できない場合は、各テーブルの従来解析へ戻す。
+        for table in tables or []:
+            due_date = self.extract_due_date_from_table(table)
+            if due_date:
+                return due_date
+
+        return ""
+
     def extract_due_date_from_table(
         self,
         table: list[list[str | None]],
